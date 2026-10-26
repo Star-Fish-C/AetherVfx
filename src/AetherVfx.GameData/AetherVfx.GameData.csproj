@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GameLibPath Condition="'$(GameLibPath)' == ''">$(APPDATA)\XIVLauncherCN\addon\Hooks\dev</GameLibPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AetherVfx.Core/AetherVfx.Core.csproj" />
+    <Reference Include="Lumina"><HintPath>$(GameLibPath)\Lumina.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Lumina.Excel"><HintPath>$(GameLibPath)\Lumina.Excel.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

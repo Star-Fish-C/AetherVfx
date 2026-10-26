@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+artifacts/
+*.user
+.vs/
+*.log
+*.dmp
+*.pmp
+*.avfx
+*.atex
+*.scd
+*.mdl
+# Generated local game archive index; rebuilt automatically if absent.
+src/AetherVfx.Plugin/assets/catalog-cache.json.gz

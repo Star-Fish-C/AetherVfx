@@ -1,0 +1,7 @@
+{
+  "Source": "https://github.com/0ceal0t/Dalamud-VFXEditor",
+  "Commit": "05f6eb0cce19a6a91ae275bce609299d573914b3",
+  "GameVersion": "not-declared-by-upstream",
+  "Files": ["bnpc.json", "npc_files.json"],
+  "Evidence": "IndirectReference; every referenced file is checked against the installed client"
+}

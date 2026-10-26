@@ -1,0 +1,17 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <AssemblyName>AetherVfx</AssemblyName>
+    <Version>0.3.3</Version>
+    <DalamudLibPath Condition="'$(DALAMUD_HOME)' == ''">$(APPDATA)\XIVLauncherCN\addon\Hooks\dev\</DalamudLibPath>
+    <PenumbraApiPath Condition="'$(PenumbraApiPath)' == ''">$(APPDATA)\XIVLauncherCN\installedPlugins\Penumbra\1.7.2.4\Penumbra.Api.dll</PenumbraApiPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AetherVfx.Core/AetherVfx.Core.csproj" />
+    <ProjectReference Include="../AetherVfx.GameData/AetherVfx.GameData.csproj" />
+    <Reference Include="Penumbra.Api"><HintPath>$(PenumbraApiPath)</HintPath><Private>true</Private></Reference>
+    <Reference Include="Luna"><HintPath>$([System.IO.Path]::GetDirectoryName('$(PenumbraApiPath)'))\Luna.dll</HintPath><Private>true</Private></Reference>
+    <None Include="AetherVfx.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="assets/**/*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

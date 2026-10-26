@@ -1,0 +1,11 @@
+{
+  "Author": "AetherVfx contributors",
+  "Name": "随身特效工作台",
+  "InternalName": "AetherVfx",
+  "AssemblyVersion": "0.3.3.0",
+  "Description": "全量 AVFX 目录、地区／怪物／副本关联与组合工作台，支持装备 PMP 导出。原生预览因客户端崩溃暂时禁用，尚未完成独立播放器。",
+  "Punchline": "直接看着角色制作装备特效",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "Tags": ["vfx", "modding", "工作台"]
+}
