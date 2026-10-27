@@ -112,6 +112,10 @@ CharaView 在 `9CD718` 初始化自身 CameraManager，传入视图索引；同�
 
 复现：`--rip-target 28fd978 --rip-target 2a957d0 --output-dir artifacts/native-analysis/office-20261027-camera-global`。该扫描先寻找可能的 RIP 位移字节，再从所属 unwind 区间解码并核对位移位置及实际目标，支持位移后带立即数的指令；不覆盖无 unwind 区间、间接计算地址、别名指针或所有控制流，因此数字是候选下界而非完整写入者清单。
 
+继续追踪 `9D3B90`：本机 `.rdata` 的 `219FAB8` 虚表第 1 项为基础初始化 `9CD2D0`，第 2 项为 `9D3B90`。`9D36A0` 在调用基础构造 `9CD180` 后，于 `9D36B4..9D36BB` 将该虚表写入对象；由此确认这是沿用基础初始化但覆盖释放的派生视图。其两个初始化包装 `9D3820`、`9D3960` 分别有 4 和 7 个经 unwind 验证的直接调用；构造入口有 17 个直接调用。对应槽号及动态分派覆盖尚未完全确认。
+
+现有手动观察器只挂接基础 `9CD3E0`，因此**不会直接记录派生虚表调用 `9D3B90` 的释放**；不能以基础 Release 观察记录推断全部视图均已交还。它仍然只是有限诊断，不能据此启用原生预览。复现使用 `--vtable 219fab8:13 --rip-target 219fab8 --function 9d3b90`，以及 `--references 9d36a0 --references 9d3820 --references 9d3960 --references 9d3b90`；证据分别保存在 `artifacts/native-analysis/office-20261027-derived-release` 和 `office-20261027-derived-callers`。虚表长度在此只核对前 13 项；直接调用扫描不覆盖间接调用。
+
 复现本节：先导出本机 `Scene.CharacterBase` 和 `Scene.CameraManager`，再运行分析脚本加 `--function 3900e0:390163 --function 9cea20:9cead9`。脚本现已正确解析 `StaticVirtualTable` 的 RIP 相对地址，并输出模型第 30/31 项。以上连接支持继续调查该路线，但尚未证明最终粒子绘制、深度或透明混合正确。
 
 分析库安装在被 Git 忽略的 `artifacts/tools`：capstone 5.0.9、pefile 2024.8.26、dnfile 0.18.0；本轮仅脚本使用前两者。ILSpy 命令行 11.1.0.9782 仅用于读取本机 DLL。工具不修改游戏文件，也不执行游戏代码。

@@ -20,7 +20,7 @@ public sealed partial class Plugin
                 {
                     if (nativeObserver is not null) throw new InvalidOperationException("观察器已运行，请先 observe-stop");
                     nativeObserver = createNativeObserver();
-                    message = "正在观察游戏原有调用；请仅执行约定的界面操作，结束后 /avfxprobe observe-stop";
+                    message = "正在观察游戏原有调用（可能漏掉派生视图释放）；结束后 /avfxprobe observe-stop";
                 }
                 else StopObserver();
             });
@@ -38,7 +38,7 @@ public sealed partial class Plugin
             Time = DateTimeOffset.UtcNow, ClientHash = NativePreviewObserver.BuildHash,
             StopwatchFrequency = System.Diagnostics.Stopwatch.Frequency,
             observer.Dropped, Events = observer.Records,
-            Limitation = "Only sampled calls; no ownership, thread exclusivity or visual acceptance inferred."
+            Limitation = "Only sampled calls; derived CharaView release 0x9D3B90 is not observed. No ownership, thread exclusivity or visual acceptance inferred."
         }, ProjectStore.Json));
         nativeObserver = null;
         message = "观察已停止，记录：" + path;
