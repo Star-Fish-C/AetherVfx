@@ -125,6 +125,17 @@ internal static class CatalogTests
             var changed = new EffectCompiler(original).CompileForPreview(new() { Layers = [new() { Source = "vfx/test.avfx", Scale = 2 }] }).Effect!;
             Assert(PreviewResources.FromEffect(changed).VfxPath != mapped.VfxPath, "编辑后仍使用旧缓存路径");
         });
+        Test("素材路径按来源选择，组合继续使用编译产物", () =>
+        {
+            var effect = new EffectCompiler(original).CompileForPreview(new() { Layers = [new() { Source = "vfx/test.avfx" }] }).Effect!;
+            var path = ResourceReference.GamePath("vfx/test.avfx");
+            var archive = new ResourceReference { Kind = ResourceKind.Archive, Archive = new("ffxiv", 0, 0, 0, 0, 128), PackageVersion = new string('a', 64), ContentHash = new string('b', 64) };
+            Assert(PreviewPayload.Asset("path", "路径", path, effect).NativeGamePath == path.Path, "游戏路径未传递给播放器");
+            Assert(PreviewPayload.Asset("archive", "归档", archive, effect).NativeGamePath is null, "归档资源误用游戏路径");
+            Assert(new PreviewPayload("composition", "组合", effect).NativeGamePath is null, "组合误用原始路径");
+            try { PreviewPayload.Asset("invalid", "无效", ResourceReference.GamePath("../bad"), effect); throw new Exception("无效路径被接受"); }
+            catch (InvalidDataException) { }
+        });
         Test("原生特效自然结束后停止不重复释放，指针可再次跟踪", () =>
         {
             var registry = new NativeVfxRegistry();

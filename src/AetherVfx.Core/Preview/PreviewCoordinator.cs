@@ -3,7 +3,16 @@ namespace AetherVfx.Core;
 public enum PreviewMode { Self, Window }
 public enum PreviewScope { Asset, Composition }
 // Preview is intentionally independent of equipment targets and IMC manipulations.
-public sealed record PreviewPayload(string Id, string Name, CompiledEffect Effect, string? NativeGamePath = null);
+public sealed record PreviewPayload(string Id, string Name, CompiledEffect Effect, string? NativeGamePath = null)
+{
+    // Named assets can use their game path directly; archive-only assets and compiled
+    // compositions need a private mapping. Neither path changes the work project.
+    public static PreviewPayload Asset(string id, string name, ResourceReference reference, CompiledEffect effect)
+    {
+        reference.Validate();
+        return new(id, name, effect, reference.Kind == ResourceKind.GamePath ? reference.Path : null);
+    }
+}
 public interface IPreviewSurface
 {
     bool Active { get; }

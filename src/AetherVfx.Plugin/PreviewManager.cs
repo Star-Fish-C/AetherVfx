@@ -55,8 +55,8 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
                 throw new InvalidOperationException("换区期间不能预览");
             actor = player.Address; isSelf = true; territory = client.TerritoryType; gpose = client.IsGPosing;
             effect = engine.Play(path, actor);
-            Status = "原始游戏路径对照播放 · 不使用临时文件映射";
-            Diagnostic = "等待资源状态；请与常规素材预览对照";
+            Status = "游戏路径播放 · 不创建临时文件映射";
+            Diagnostic = "游戏路径可能受当前角色的 Penumbra Mod 重定向；画面仍待验收";
             nextDiagnostic = DateTime.UtcNow.AddSeconds(1);
             log.Information("AetherVfx 原始路径对照：{Path}，角色坐标={Position}", path, player.Position);
             return;

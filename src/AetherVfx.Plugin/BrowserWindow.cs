@@ -294,7 +294,7 @@ public sealed partial class Plugin
         try
         {
             var effect = RawEffectLoader.Load(resources, record.Preferred);
-            coordinator.Play(layout.Mode, PreviewScope.Asset, new(record.Id, DisplayName(record), effect));
+            coordinator.Play(layout.Mode, PreviewScope.Asset, PreviewPayload.Asset(record.Id, DisplayName(record), record.Preferred, effect));
             resourceCatalog.SetCapability(record.Id, ResourceCapability.PendingGameValidation, "已提交原生预览，画面与上下文仍需实际确认");
             library.Recent.Remove(record.Id); library.Recent.Insert(0, record.Id);
             if (library.Recent.Count > 100) library.Recent.RemoveRange(100, library.Recent.Count - 100); SaveLibrary();
