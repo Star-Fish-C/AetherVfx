@@ -35,12 +35,35 @@ def empty_reference_results(requested_refs):
     return {hex(target): [] for target in sorted(requested_refs)}
 
 
+def rip_displacement_candidates(data, start_rva, targets):
+    """Find possible disp32 positions, including instructions with trailing immediates.
+
+    These are only byte candidates; callers must decode from an instruction boundary.
+    RIP-relative addressing uses the end of the full instruction, not the displacement.
+    """
+    for offset in range(len(data) - 3):
+        displacement = struct.unpack_from('<i', data, offset)[0]
+        after_disp = start_rva + offset + 4
+        for immediate_size in (0, 1, 2, 4):
+            target = after_disp + immediate_size + displacement
+            if target in targets:
+                yield offset, target
+
+
+def matches_rip_reference(ins, displacement_rva, target, image_base):
+    if ins.address - image_base + ins.disp_offset != displacement_rva or ins.disp_size != 4:
+        return False
+    return any(op.type == capstone.CS_OP_MEM and op.mem.base == capstone.x86.X86_REG_RIP and
+               ins.address + ins.size + op.mem.disp - image_base == target for op in ins.operands)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('executable', type=Path)
     parser.add_argument('--function', action='append', default=[], help='Extra RVA or start:end range, in hex')
     parser.add_argument('--references', action='append', default=[], help='Find direct call/jump references to a hex RVA; indirect calls are not covered')
     parser.add_argument('--field-offset', action='append', default=[], help='Find memory operands with this hex displacement (candidates, not a type identification)')
+    parser.add_argument('--rip-target', action='append', default=[], help='Find decoded RIP-relative references to this global RVA; excludes code without unwind metadata')
     parser.add_argument('--vtable', action='append', default=[], metavar='RVA:COUNT',
                         help='Read a candidate vtable from .rdata; RVA is hex, count is decimal (max 128)')
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'artifacts/native-analysis',
@@ -71,6 +94,26 @@ def main():
     requested_refs = {int(value, 16) for value in args.references}
     report['DirectReferences'] = empty_reference_results(requested_refs)
     report['FieldCandidates'] = {}
+    rip_targets = {int(value, 16) for value in args.rip_target}
+    report['RipReferences'] = empty_reference_results(rip_targets)
+    seen_rip = set()
+    if rip_targets:
+        for offset, target in rip_displacement_candidates(text_data, text_rva, rip_targets):
+            site = text_rva + offset
+            index = bisect.bisect_right(starts, site) - 1
+            if index < 0 or not entries[index][0] <= site < entries[index][1]:
+                continue
+            start, end = entries[index]
+            if start not in boundaries:
+                boundaries[start] = {ins.address - base: ins for ins in md.disasm(image[start:end], base + start)}
+            for address, ins in boundaries[start].items():
+                if not matches_rip_reference(ins, site, target, base):
+                    continue
+                if (address, target) in seen_rip:
+                    continue
+                seen_rip.add((address, target))
+                report['RipReferences'][hex(target)].append({'Site': hex(address), 'Instruction': f'{ins.mnemonic} {ins.op_str}', 'UnwindRange': [hex(start), hex(end)]})
+                functions.setdefault(start, (end, f'RIP reference to {target:#x}'))
     for value in args.field_offset:
         displacement = int(value, 16)
         candidates = []

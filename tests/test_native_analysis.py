@@ -36,6 +36,21 @@ class FallbackBoundsTests(unittest.TestCase):
         self.assertEqual(analysis.empty_reference_results({0x120, 0x128}),
                          {'0x120': [], '0x128': []})
 
+    def test_rip_displacement_candidates_account_for_trailing_immediate(self):
+        # mov rax,[rip+0x10]; mov dword [rip+0x10],1
+        code = bytes.fromhex('48 8b 05 10 00 00 00 c7 05 10 00 00 00 01 00 00 00')
+        candidates = list(analysis.rip_displacement_candidates(code, 0x1000, {0x1017, 0x1021}))
+        self.assertIn((3, 0x1017), candidates)
+        self.assertIn((9, 0x1021), candidates)
+
+    def test_rip_validation_uses_instruction_end_and_actual_displacement_position(self):
+        self.decoder.detail = True
+        code = bytes.fromhex('c7 05 10 00 00 00 01 00 00 00')
+        ins = next(self.decoder.disasm(code, self.base + self.start))
+        self.assertTrue(analysis.matches_rip_reference(ins, self.start + 2, self.start + 26, self.base))
+        self.assertFalse(analysis.matches_rip_reference(ins, self.start + 3, self.start + 26, self.base))
+        self.assertFalse(analysis.matches_rip_reference(ins, self.start + 2, self.start + 22, self.base))
+
 
 if __name__ == '__main__':
     unittest.main()

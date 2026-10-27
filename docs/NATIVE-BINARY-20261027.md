@@ -108,6 +108,10 @@ CharaView 在 `9CD718` 初始化自身 CameraManager，传入视图索引；同�
 
 本机 `Scene.CameraManager.Instance` 签名解析到全局存储 RVA `28FD978`，与 CharaView 的相机表访问一致；`OffscreenRenderingManager.Instance` 是另一处 `2A957D0`。不能把前者的表偏移 `+0xA0` 当成后者声明偏移不匹配的证据。
 
+对这两个全局地址新增 RIP 相对引用扫描，分别得到 65 和 20 个经 unwind 指令边界确认的引用（本机构建）。其中 `9CD784` 和 `9CEB9A` 都将相机写入 CameraManager 的 `+0xA0` 索引表；`9CD417` 和另一清理函数 `9D3C02` 都会清空该表项。后者在同一函数内还删除角色对象并释放成员，表明仅观察基础 `9CD3E0` Release 不能覆盖已发现的所有相机表清理路径。仍需确认这些函数的动态调用条件、写入者覆盖及线程，不能凭静态结果断言任一槽位可安全持有。
+
+复现：`--rip-target 28fd978 --rip-target 2a957d0 --output-dir artifacts/native-analysis/office-20261027-camera-global`。该扫描先寻找可能的 RIP 位移字节，再从所属 unwind 区间解码并核对位移位置及实际目标，支持位移后带立即数的指令；不覆盖无 unwind 区间、间接计算地址、别名指针或所有控制流，因此数字是候选下界而非完整写入者清单。
+
 复现本节：先导出本机 `Scene.CharacterBase` 和 `Scene.CameraManager`，再运行分析脚本加 `--function 3900e0:390163 --function 9cea20:9cead9`。脚本现已正确解析 `StaticVirtualTable` 的 RIP 相对地址，并输出模型第 30/31 项。以上连接支持继续调查该路线，但尚未证明最终粒子绘制、深度或透明混合正确。
 
 分析库安装在被 Git 忽略的 `artifacts/tools`：capstone 5.0.9、pefile 2024.8.26、dnfile 0.18.0；本轮仅脚本使用前两者。ILSpy 命令行 11.1.0.9782 仅用于读取本机 DLL。工具不修改游戏文件，也不执行游戏代码。
