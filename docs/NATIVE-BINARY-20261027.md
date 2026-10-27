@@ -106,6 +106,12 @@ CharaView 在 `9CD718` 初始化自身 CameraManager，传入视图索引；同�
 
 分析库安装在被 Git 忽略的 `artifacts/tools`：capstone 5.0.9、pefile 2024.8.26、dnfile 0.18.0；本轮仅脚本使用前两者。ILSpy 命令行 11.1.0.9782 仅用于读取本机 DLL。工具不修改游戏文件，也不执行游戏代码。
 
+### 追加核验：候选虚函数的直接调用边界
+
+在相同 EXE 指纹下，候选表 `2160360` 的 `+0x120` 目标 `3E2FB0` 的 unwind 区间为 `3E2FB0..3E47CC`，包含对 `3B5D10` 的 8 个直接调用；全 `.text` 中按 unwind 边界验证的 `3B5D10` 直接引用共 362 个。它被许多位置使用，不能仅凭调用把它命名为特效绘制或渲染目标选择。`+0x128` 候选目标 `3E47E0` 在首条 `ret 0` 结束，保守边界为 `3E47E3`；本次扫描没有找到这两个目标的直接引用，但不覆盖虚调用、无 unwind 区间代码或所有控制流。候选对象的动态类型和实际绘制通路仍未证明。
+
+复现：`--references 3e2fb0 --references 3e47e0 --references 3831a0 --function 3e2fb0 --function 3e47e0`；再使用 `--references 3b5d10 --function 3b5d10 --function 37d750 --function 37de30`。本机报告分别位于忽略目录 `artifacts/native-analysis/office-20261027-dispatch` 和 `office-20261027-dispatch-callees`。这些静态结果不是运行时占用证明，也不是画面验收。
+
 先使用 ILSpy 的 `-t` 导出本机 `CharaView`、`OffscreenRenderingManager` 和 `Scene.VfxObject` 至 `artifacts/native-analysis/structs`，再运行：
 
 ```powershell
