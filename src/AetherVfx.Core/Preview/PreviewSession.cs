@@ -39,15 +39,20 @@ public interface IRetryablePreviewLease : IDisposable { }
 // Leases must represent resources the caller actually owns; no borrowed native pointer is a lease.
 public sealed class PreviewSession : IDisposable
 {
+    private static readonly TimeSpan ViewInitializationTimeout = TimeSpan.FromSeconds(30);
+    private readonly TimeProvider clock;
     private readonly LinkedList<IDisposable> leases = new();
     private readonly HashSet<IDisposable> ownedLeases = new(ReferenceEqualityComparer.Instance);
     private readonly HashSet<IDisposable> failedLeases = new(ReferenceEqualityComparer.Instance);
     private long generation;
+    private long initializationStarted;
     private bool disposed, cleanupFailed, releasing;
     public long Generation => generation;
     public PreviewStatus Status { get; private set; } = new(PreviewState.Idle, "预览已停止");
     public bool Active => Status.State is PreviewState.Initializing or PreviewState.Playing;
     public bool CleanupPending => cleanupFailed;
+
+    public PreviewSession(TimeProvider? clock = null) => this.clock = clock ?? TimeProvider.System;
 
     public long Begin(PreviewAccess access)
     {
@@ -60,8 +65,17 @@ public sealed class PreviewSession : IDisposable
             Status = new(PreviewState.Disabled, access.Diagnostic);
             access.RequireEnabled();
         }
+        initializationStarted = clock.GetTimestamp();
         Status = new(PreviewState.Initializing, "正在初始化独立预览");
         return generation;
+    }
+
+    // Called on the same controlled thread as Begin/Stop, never from a timer callback.
+    public void Tick()
+    {
+        if (Status.State == PreviewState.Initializing && !Status.ViewReady &&
+            clock.GetElapsedTime(initializationStarted, clock.GetTimestamp()) >= ViewInitializationTimeout)
+            Fail(generation, "视图初始化超时");
     }
 
     public bool IsCurrent(long ticket) => !disposed && Active && ticket == generation;

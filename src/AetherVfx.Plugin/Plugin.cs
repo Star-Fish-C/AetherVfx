@@ -89,6 +89,7 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         if (disposed) return;
         Run(preview.Tick);
+        Run(windowPreview.Tick);
         if (coordinator.Mode == PreviewMode.Window && !windowPreview.Active && coordinator.ResourceId is { } assetId)
         {
             string reason = windowPreview.Status;

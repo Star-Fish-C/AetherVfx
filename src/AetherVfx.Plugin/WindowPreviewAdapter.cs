@@ -26,6 +26,7 @@ internal sealed class WindowPreviewAdapter : IPreviewSurface, IDisposable
         session.Disable(Access.Diagnostic);
     }
     public void Recover() => legacyRecovery.Recover();
+    public void Tick() => session.Tick();
     public void Play(PreviewPayload payload) => StartUnavailable();
     public void OpenView() => StartUnavailable();
     private void StartUnavailable()

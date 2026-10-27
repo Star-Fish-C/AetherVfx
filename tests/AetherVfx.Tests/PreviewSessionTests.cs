@@ -199,6 +199,20 @@ static class PreviewSessionTests
             int released = 0; Assert(!session.Own(ticket, new Lease(() => released++)) && released == 1, "卸载后结果泄漏");
             try { session.Begin(Ready()); throw new Exception("卸载后可播放"); } catch (ObjectDisposedException) { }
         });
+        Test("视图初始化按单调时钟超时并清理，重启与就绪不受旧期限影响", () =>
+        {
+            var clock = new FakeClock(); using var session = new PreviewSession(clock); int released = 0;
+            long old = session.Begin(Ready()); session.Own(old, new Lease(() => released++));
+            clock.Advance(TimeSpan.FromSeconds(29)); session.Tick();
+            Assert(session.Active && released == 0, "提前超时");
+            clock.Advance(TimeSpan.FromSeconds(1)); session.Tick(); session.Tick();
+            Assert(session.Status.State == PreviewState.Failed && session.Status.Message.Contains("超时") && released == 1, "超时未正确清理");
+            Assert(!session.MarkViewReady(old), "超时后的旧结果生效");
+            long current = session.Begin(Ready()); clock.Advance(TimeSpan.FromSeconds(29)); session.Tick();
+            Assert(session.MarkViewReady(current), "重启后沿用了旧期限");
+            clock.Advance(TimeSpan.FromMinutes(5)); session.Tick();
+            Assert(session.Active && session.Status.ViewReady, "已就绪视图被初始化期限取消");
+        });
         Test("视图未就绪不允许宣称播放，启动和清理均失败可再次停止", () =>
         {
             using var session = new PreviewSession(); long ticket = session.Begin(Ready());
@@ -218,6 +232,13 @@ static class PreviewSessionTests
         throw new Exception("应拒绝操作");
     }
     private sealed class Lease(Action release) : IDisposable { public void Dispose() => release(); }
+    private sealed class FakeClock : TimeProvider
+    {
+        private long timestamp;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => timestamp;
+        public void Advance(TimeSpan interval) => timestamp += interval.Ticks;
+    }
     private sealed class RetryableLease(Action release) : IRetryablePreviewLease { public void Dispose() => release(); }
     private sealed class SessionSurface : IPreviewSurface
     {
