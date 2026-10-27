@@ -61,7 +61,7 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
             log.Information("AetherVfx 原始路径对照：{Path}，角色坐标={Position}", path, player.Position);
             return;
         }
-        ShowFor(payload.Effect, player.ObjectIndex, player.Address, true);
+        ShowFor(payload.Effect ?? throw new InvalidDataException("预览缺少编译产物"), player.ObjectIndex, player.Address, true);
     }
     public void ShowFor(CompiledEffect compiled, int objectIndex, nint address, bool self, string? nativePath = null)
     {

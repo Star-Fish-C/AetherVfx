@@ -293,8 +293,8 @@ public sealed partial class Plugin
         autoPreview = false; coordinator.Stop();
         try
         {
-            var effect = RawEffectLoader.Load(resources, record.Preferred);
-            coordinator.Play(layout.Mode, PreviewScope.Asset, PreviewPayload.Asset(record.Id, DisplayName(record), record.Preferred, effect));
+            var payload = PreviewPayload.Asset(record.Id, DisplayName(record), record.Preferred, resources);
+            coordinator.Play(layout.Mode, PreviewScope.Asset, payload);
             resourceCatalog.SetCapability(record.Id, ResourceCapability.PendingGameValidation, "已提交原生预览，画面与上下文仍需实际确认");
             library.Recent.Remove(record.Id); library.Recent.Insert(0, record.Id);
             if (library.Recent.Count > 100) library.Recent.RemoveRange(100, library.Recent.Count - 100); SaveLibrary();

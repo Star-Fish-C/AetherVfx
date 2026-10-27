@@ -3,14 +3,22 @@ namespace AetherVfx.Core;
 public enum PreviewMode { Self, Window }
 public enum PreviewScope { Asset, Composition }
 // Preview is intentionally independent of equipment targets and IMC manipulations.
-public sealed record PreviewPayload(string Id, string Name, CompiledEffect Effect, string? NativeGamePath = null)
+public sealed record PreviewPayload(string Id, string Name, CompiledEffect? Effect, string? NativeGamePath = null)
 {
     // Named assets can use their game path directly; archive-only assets and compiled
     // compositions need a private mapping. Neither path changes the work project.
-    public static PreviewPayload Asset(string id, string name, ResourceReference reference, CompiledEffect effect)
+    public static PreviewPayload Asset(string id, string name, ResourceReference reference, IResources resources)
     {
         reference.Validate();
-        return new(id, name, effect, reference.Kind == ResourceKind.GamePath ? reference.Path : null);
+        if (reference.Kind == ResourceKind.GamePath)
+        {
+            if (!reference.Path.EndsWith(".avfx", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("请选择 AVFX 特效");
+            // The game resolves dependencies for known paths. Loading or parsing them here
+            // would prevent browsing valid effects outside the editor's supported subset.
+            return new(id, name, null, reference.Path);
+        }
+        return new(id, name, RawEffectLoader.Load(resources, reference));
     }
 }
 public interface IPreviewSurface

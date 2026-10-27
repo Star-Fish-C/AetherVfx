@@ -129,11 +129,12 @@ internal static class CatalogTests
         {
             var effect = new EffectCompiler(original).CompileForPreview(new() { Layers = [new() { Source = "vfx/test.avfx" }] }).Effect!;
             var path = ResourceReference.GamePath("vfx/test.avfx");
-            var archive = new ResourceReference { Kind = ResourceKind.Archive, Archive = new("ffxiv", 0, 0, 0, 0, 128), PackageVersion = new string('a', 64), ContentHash = new string('b', 64) };
-            Assert(PreviewPayload.Asset("path", "路径", path, effect).NativeGamePath == path.Path, "游戏路径未传递给播放器");
-            Assert(PreviewPayload.Asset("archive", "归档", archive, effect).NativeGamePath is null, "归档资源误用游戏路径");
+            var pathPayload = PreviewPayload.Asset("path", "路径", path, new UnreadableResources());
+            Assert(pathPayload.NativeGamePath == path.Path && pathPayload.Effect is null, "游戏路径未直接传递给播放器");
+            var archivePayload = PreviewPayload.Asset("archive", "归档", reference, new ArchiveResources(original, fixture));
+            Assert(archivePayload.NativeGamePath is null && archivePayload.Effect!.Avfx.SequenceEqual(fixture), "归档资源未准备映射产物");
             Assert(new PreviewPayload("composition", "组合", effect).NativeGamePath is null, "组合误用原始路径");
-            try { PreviewPayload.Asset("invalid", "无效", ResourceReference.GamePath("../bad"), effect); throw new Exception("无效路径被接受"); }
+            try { PreviewPayload.Asset("invalid", "无效", ResourceReference.GamePath("../bad"), original); throw new Exception("无效路径被接受"); }
             catch (InvalidDataException) { }
         });
         Test("原生特效自然结束后停止不重复释放，指针可再次跟踪", () =>
@@ -151,6 +152,11 @@ internal static class CatalogTests
     {
         public byte[] Read(string path) => original.Read(path);
         public byte[] Read(ResourceReference reference) => reference.Kind == ResourceKind.Archive ? bytes : original.Read(reference.Path);
+    }
+    private sealed class UnreadableResources : IResources
+    {
+        public byte[] Read(string path) => throw new IOException("不应读取游戏路径或依赖");
+        public byte[] Read(ResourceReference reference) => throw new IOException("不应读取游戏路径或依赖");
     }
     private sealed class FakeArchive(byte[] bytes, int total, int failure = -1) : IArchiveSource
     {
