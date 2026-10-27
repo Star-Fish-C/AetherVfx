@@ -116,6 +116,12 @@ CharaView 在 `9CD718` 初始化自身 CameraManager，传入视图索引；同�
 
 现有手动观察器只挂接基础 `9CD3E0`，因此**不会直接记录派生虚表调用 `9D3B90` 的释放**；不能以基础 Release 观察记录推断全部视图均已交还。它仍然只是有限诊断，不能据此启用原生预览。复现使用 `--vtable 219fab8:13 --rip-target 219fab8 --function 9d3b90`，以及 `--references 9d36a0 --references 9d3820 --references 9d3960 --references 9d3b90`；证据分别保存在 `artifacts/native-analysis/office-20261027-derived-release` 和 `office-20261027-derived-callers`。虚表长度在此只核对前 13 项；直接调用扫描不覆盖间接调用。
 
+### 离屏输出与引用对象不是同一张表
+
+`9CD6D0` 和 `9CE9FA` 调用 `26A870`，后者先对传入对象调用虚表 `+0x10`，再对旧表项调用 `+0x18`，最后写入传入的离屏管理器对象 `+0x108 + index*8`。`9CD7DD` 则调用 `26A850`，后者从**另一个全局位置** `28FCF08` 指向的对象读取 `+0x2C8 + index*8`，返回值交给视图回调。这两张表不能仅凭使用同一编号就视为同一对象或完整的渲染链。
+
+进一步发现 `26A1D0` 在 `26A2C8` 也读取 `28FCF08` 所指对象的 `+0x2C8` 索引表；索引来自线程局部对象 `+8` 的高 4 位，或在另一条件下取零。这里尚未证明该值与 ActorVFX 分组的关联，也未证明读取的条目包含粒子输出。复现用 `--function 26a850:26a900 --references 26a870 --references 26a850` 及 `--rip-target 28fcf08`；证据保存在 `artifacts/native-analysis/office-20261027-offscreen-routing` 和 `office-20261027-output-table`。对全局地址的扫描得到 280 个候选引用，只覆盖带 unwind 区间且能从区间起点解码的指令。
+
 复现本节：先导出本机 `Scene.CharacterBase` 和 `Scene.CameraManager`，再运行分析脚本加 `--function 3900e0:390163 --function 9cea20:9cead9`。脚本现已正确解析 `StaticVirtualTable` 的 RIP 相对地址，并输出模型第 30/31 项。以上连接支持继续调查该路线，但尚未证明最终粒子绘制、深度或透明混合正确。
 
 分析库安装在被 Git 忽略的 `artifacts/tools`：capstone 5.0.9、pefile 2024.8.26、dnfile 0.18.0；本轮仅脚本使用前两者。ILSpy 命令行 11.1.0.9782 仅用于读取本机 DLL。工具不修改游戏文件，也不执行游戏代码。
