@@ -80,6 +80,12 @@ CharaView 在 `9CD718` 初始化自身 CameraManager，传入视图索引；同�
 
 这排除了“调用 CreateBattleCharacter(-1) 自动申请一个 CharaView 槽位”的方案。待验证的实现方向是：在已确认线程上同时检查角色槽、相机槽及引用计数，并在相关原生写入入口执行前交还；还需证明入口覆盖和释放顺序，当前未实现或批准该协议。
 
+#### 本机创建调用参数复核
+
+再次对 19 处直接调用的参数准备和分支条件逐一核对：`9CD326` 使用 CharaView 的显式角色索引；`BC3DB4` 显式使用 248；其余 17 处将索引设为 `0xFFFFFFFF`，进入只扫描 0–239 的自动分配分支。其中 `110E4C1` 前有 `cmp eax, 0xA` 和不相等跳转，沿调用分支 `edx = eax - 0xB = -1`；`17BCEBB` 前只有在 `rbx == 0` 时才进入调用分支，故 `edx = rbx - 1 = -1`。其他自动分配调用直接载入 -1 或由已清零寄存器减一得到。
+
+这缩小了已枚举的直接创建调用的风险范围：扫描结果中只有 CharaView 直接创建位置能够用已知视图索引访问 240–247；但它**不证明其他调用不存在**，扫描不覆盖间接调用、无 unwind 元数据的调用或直接写入角色槽、相机表和引用计数的路径，也不证明初始化钩子能安全交还。复现使用 `--references 1756410 --references 1756840 --references 9cd2d0 --function 9cd2d0 --function 9cd3e0`，本机证据保存在忽略目录 `artifacts/native-analysis/office-20261027-slot-callers`。
+
 外部检索也未找到可直接作为本机租约证明的实现：[FireGaze 的槽位观察模型](https://github.com/DCritHitFireIV/FireGaze/blob/72809085fd3d0fc05570dd305fae7a70ba8fc894/src/FireGaze/PortraitPreview/PortraitOwnedSceneSlotCensus.cs)明确将 `ProductionAdmission` 固定为 false，稳定空槽观察不等于预订。它仅作为对照，未复制其代码，也未据此提升兼容状态。
 
 ### 追加核验：申请入口调用者与框架线程
