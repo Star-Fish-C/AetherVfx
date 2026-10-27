@@ -30,6 +30,11 @@ def conservative_fallback_end(md, code, start_rva, image_base):
     return end
 
 
+def empty_reference_results(requested_refs):
+    """Represent zero matches explicitly; the scan never covers indirect references."""
+    return {hex(target): [] for target in sorted(requested_refs)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('executable', type=Path)
@@ -63,8 +68,8 @@ def main():
     # Decode from the enclosing unwind range to reject opcode bytes embedded in instructions.
     # This still is not a complete CFG: indirect callers and code without unwind metadata are omitted.
     boundaries = {}
-    report['DirectReferences'] = {}
     requested_refs = {int(value, 16) for value in args.references}
+    report['DirectReferences'] = empty_reference_results(requested_refs)
     report['FieldCandidates'] = {}
     for value in args.field_offset:
         displacement = int(value, 16)

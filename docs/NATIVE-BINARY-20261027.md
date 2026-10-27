@@ -112,6 +112,8 @@ CharaView 在 `9CD718` 初始化自身 CameraManager，传入视图索引；同�
 
 复现：`--references 3e2fb0 --references 3e47e0 --references 3831a0 --function 3e2fb0 --function 3e47e0`；再使用 `--references 3b5d10 --function 3b5d10 --function 37d750 --function 37de30`。本机报告分别位于忽略目录 `artifacts/native-analysis/office-20261027-dispatch` 和 `office-20261027-dispatch-callees`。这些静态结果不是运行时占用证明，也不是画面验收。
 
+进一步核对 TLS 索引：`3B9D0C` 和 `3E3B7C` 的 RIP 相对读取均指向同一全局位置 `2C208C0`。前者通过 `gs:[0x58]` 取得线程局部块，在 `3B9DAA` 向块的 `+0x2E0` 写入按分组计算的上下文指针；后者通过相同 TLS 索引和偏移取出指针，在 `3E3BA0..3E3BA5` 读取该上下文的 `+0x30/+0x34` 并进行浮点相加。两者如果在同一线程且候选虚表实际被调用，可连接此前分组上下文与候选函数的数据使用；这仍不能证明条件成立、字段语义、渲染目标或实际粒子可见。复现使用 `--function 3b9c80:3b9d80 --function 3e2fb0`，证据保存在 `artifacts/native-analysis/office-20261027-tls-link` 和 `office-20261027-dispatch`。
+
 先使用 ILSpy 的 `-t` 导出本机 `CharaView`、`OffscreenRenderingManager` 和 `Scene.VfxObject` 至 `artifacts/native-analysis/structs`，再运行：
 
 ```powershell

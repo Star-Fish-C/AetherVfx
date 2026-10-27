@@ -32,6 +32,10 @@ class FallbackBoundsTests(unittest.TestCase):
     def test_incomplete_instruction_does_not_invent_range(self):
         self.assertEqual(self.end('90 e8'), self.start + 1)
 
+    def test_unmatched_reference_targets_remain_explicit(self):
+        self.assertEqual(analysis.empty_reference_results({0x120, 0x128}),
+                         {'0x120': [], '0x128': []})
+
 
 if __name__ == '__main__':
     unittest.main()
