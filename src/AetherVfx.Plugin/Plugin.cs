@@ -28,7 +28,6 @@ public sealed partial class Plugin : IDalamudPlugin
     private bool open = true, indexed, autoPreview, disposed;
     private Guid? selected, solo;
     private DateTime dirtyAt = DateTime.MaxValue;
-    private DateTime lastPreviewAt = DateTime.MinValue;
     private string search = "", itemSearch = "", manualPath = "", message = "", projectPath, exportPath;
     private string category = "全部";
     private int wizard;
@@ -45,13 +44,13 @@ public sealed partial class Plugin : IDalamudPlugin
 
     public Plugin(IDalamudPluginInterface pi, ICommandManager commands, IDataManager data, IFramework framework,
         IObjectTable objects, IClientState client, ICondition condition, IGameGui gameGui, IPluginLog log,
-        ISigScanner scanner, IGameInteropProvider interop, ITextureReadbackProvider readback)
+        ISigScanner scanner, IGameInteropProvider interop)
     {
         this.pi = pi; this.commands = commands; this.framework = framework; this.objects = objects; this.gameGui = gameGui; this.log = log;
-        this.readback = readback;
         resources = new GameResources(data, pi, () => archive);
         compiler = new(resources); binder = new(resources); catalog = new(data);
-        nativeVfx = new(scanner, interop, log);
+        nativeVfx = new(scanner, interop, log, framework);
+        createNativeObserver = () => new(scanner, interop, framework);
         preview = new(pi, objects, client, condition, nativeVfx, log);
         windowPreview = new(pi, objects, client, condition, nativeVfx, log);
         coordinator = new(new Dictionary<PreviewMode, IPreviewSurface> { [PreviewMode.Self] = preview, [PreviewMode.Window] = windowPreview });
@@ -68,7 +67,7 @@ public sealed partial class Plugin : IDalamudPlugin
         catch (Exception ex) { message = "读取上次配置失败：" + ex.Message; }
         InitializeBrowser(data, config);
         commands.AddHandler("/avfx", new CommandInfo((_, _) => open = !open) { HelpMessage = "打开随身特效工作台" });
-        commands.AddHandler("/avfxprobe", new CommandInfo((_, _) => Run(StartNativeProbe)) { HelpMessage = "执行独立特效原生渲染验证并保存离屏帧" });
+        commands.AddHandler("/avfxprobe", new CommandInfo((_, args) => Run(() => RunNativeProbe(args))) { HelpMessage = "单项手动验证：view / original / mapped / composition / stop" });
         pi.UiBuilder.Draw += Draw; pi.UiBuilder.OpenMainUi += Open; pi.UiBuilder.OpenConfigUi += Open;
         framework.Update += Update;
     }
@@ -90,15 +89,13 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         if (disposed) return;
         Run(preview.Tick);
-        Run(windowPreview.Tick);
-        Run(TickNativeProbe);
         if (coordinator.Mode == PreviewMode.Window && !windowPreview.Active && coordinator.ResourceId is { } assetId)
         {
             string reason = windowPreview.Status;
             if (coordinator.Scope == PreviewScope.Asset) resourceCatalog.SetCapability(assetId, ResourceCapability.Unavailable, reason);
             Run(coordinator.Stop); message = reason;
         }
-        if (autoPreview && coordinator.Scope == PreviewScope.Composition && dirtyAt != DateTime.MaxValue && DateTime.UtcNow - lastPreviewAt > TimeSpan.FromMilliseconds(350))
+        if (autoPreview && coordinator.Scope == PreviewScope.Composition && dirtyAt != DateTime.MaxValue && DateTime.UtcNow - dirtyAt >= TimeSpan.FromMilliseconds(350))
         { dirtyAt = DateTime.MaxValue; Run(StartPreview); }
     }
     private void Draw()
@@ -114,7 +111,7 @@ public sealed partial class Plugin : IDalamudPlugin
             }
             ImGui.End();
         }
-        if (!open && !layout.PreviewPopout && coordinator.Mode == PreviewMode.Window) Run(coordinator.Stop);
+        if (!open && !layout.PreviewPopout && coordinator.Mode == PreviewMode.Window) Run(StopPreview);
         Run(DrawBrowserWindows);
         if (open && preview.Active && coordinator.Scope == PreviewScope.Composition && Selected is { } layer) Run(() => DrawGizmo(layer));
     }
@@ -204,13 +201,21 @@ public sealed partial class Plugin : IDalamudPlugin
     }
     private void StartPreview()
     {
+        autoPreview = false;
         if (!NativePreviewSafety.Enabled) { message = NativePreviewSafety.Message; autoPreview = false; return; }
+        if (layout.Mode == PreviewMode.Window && !windowPreview.Access.CanStart) { message = windowPreview.Access.Diagnostic; return; }
         coordinator.Stop();
         preview.Recover();
         // Selecting an export target must not gate or alter workbench preview.
         var result = compiler.CompileForPreview(project, solo); diagnostics = result.Diagnostics.ToList();
         if (!result.Success) { autoPreview = false; return; }
-        coordinator.Play(layout.Mode, PreviewScope.Composition, new("composition", project.Name, result.Effect!)); dirtyAt = DateTime.MaxValue; lastPreviewAt = DateTime.UtcNow;
+        coordinator.Play(layout.Mode, PreviewScope.Composition, new("composition", project.Name, result.Effect!)); dirtyAt = DateTime.MaxValue;
+        autoPreview = true;
+    }
+    private void StopPreview()
+    {
+        autoPreview = false; dirtyAt = DateTime.MaxValue;
+        coordinator.Stop(); windowPreview.Stop();
     }
     private void DrawExport()
     {
@@ -347,6 +352,7 @@ public sealed partial class Plugin : IDalamudPlugin
     public void Dispose()
     {
         disposed = true;
+        Run(StopObserver);
         framework.Update -= Update; pi.UiBuilder.Draw -= Draw; pi.UiBuilder.OpenMainUi -= Open; pi.UiBuilder.OpenConfigUi -= Open;
         commands.RemoveHandler("/avfx"); commands.RemoveHandler("/avfxprobe"); DisposeBrowser(); Run(coordinator.Stop); Run(preview.Dispose); Run(windowPreview.Dispose); Run(nativeVfx.Dispose); Run(() => ProjectStore.Save(projectPath, project)); Run(SaveLibrary);
     }

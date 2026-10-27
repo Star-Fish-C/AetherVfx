@@ -155,6 +155,7 @@ internal static class CatalogTests
     private sealed class FakePreview : IPreviewSurface
     {
         public bool Active { get; private set; }
+        public PreviewStatus Snapshot => new(Active ? PreviewState.Playing : PreviewState.Idle, "模拟表面");
         public bool Fail;
         public void Play(PreviewPayload payload) { Active = true; if (Fail) throw new InvalidOperationException("模拟启动失败"); }
         public void Stop() => Active = false;

@@ -2,12 +2,10 @@ using AetherVfx.Core;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using System.Runtime.InteropServices;
-using System.Numerics;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 
 namespace AetherVfx;
 
-internal sealed class NativeVfxEngine(ISigScanner scanner, IGameInteropProvider interop, IPluginLog log) : IDisposable
+internal sealed class NativeVfxEngine(ISigScanner scanner, IGameInteropProvider interop, IPluginLog log, IFramework framework) : IDisposable
 {
     // Actor create/remove interop follows the MIT-licensed Dalamud-VFXEditor implementation.
     private const string CreateSignature = "40 53 55 56 57 48 81 EC ?? ?? ?? ?? 0F 29 B4 24 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? 0F B6 AC 24 ?? ?? ?? ?? 0F 28 F3 49 8B F8";
@@ -25,6 +23,9 @@ internal sealed class NativeVfxEngine(ISigScanner scanner, IGameInteropProvider 
     {
         NativePreviewSafety.RequireEnabled();
         ObjectDisposedException.ThrowIf(disposed, this);
+        RequireFrameworkThread();
+        if (framework.IsFrameworkUnloading)
+            throw new InvalidOperationException("游戏框架正在卸载，不能创建新的预览资源");
         if (remove is not null) return;
         nint createAddress = scanner.ScanText(CreateSignature);
         nint relative = scanner.ScanText(RemoveVtableSignature) + 7;
@@ -50,6 +51,13 @@ internal sealed class NativeVfxEngine(ISigScanner scanner, IGameInteropProvider 
         if (offset < 0 || offset > scanner.Module.ModuleMemorySize - length)
             throw new InvalidOperationException("当前客户端的 VFX 接口地址校验失败，预览未启动");
     }
+    private void RequireFrameworkThread()
+    {
+        // Check at the call site: Dalamud may run RunOnFrameworkThread inline after framework destruction.
+        // This is a precondition, not proof that the game's own destructor only runs on this thread.
+        if (!framework.IsInFrameworkUpdateThread)
+            throw new InvalidOperationException("原生预览操作必须在游戏 Framework 线程执行");
+    }
     public nint Play(string gamePath, nint actor)
     {
         if (actor == 0) throw new InvalidOperationException("预览角色尚未就绪");
@@ -61,14 +69,8 @@ internal sealed class NativeVfxEngine(ISigScanner scanner, IGameInteropProvider 
         return pointer;
     }
     public bool IsAlive(nint pointer) => pointer != 0 && live.Contains(pointer);
-    public unsafe void Center(nint pointer, Vector3 position, float rotation)
-    {
-        if (!IsAlive(pointer)) return;
-        var vfx = (VfxObject*)pointer;
-        vfx->Position = position;
-        vfx->Rotation = FFXIVClientStructs.FFXIV.Common.Math.Quaternion.CreateFromYawPitchRoll(rotation, 0, 0);
-        vfx->UpdateTransforms(true);
-    }
+    // CN 2026.10.06 ActorCreate returns a 0x1E0 allocation, NOT the installed VfxObject layout.
+    // Keep it opaque. Attachment and transforms must be expressed through AVFX, never this handle.
     public string Describe(nint pointer)
     {
         if (!IsAlive(pointer)) return "特效对象已结束";
@@ -82,7 +84,10 @@ internal sealed class NativeVfxEngine(ISigScanner scanner, IGameInteropProvider 
     }
     public void Stop(nint pointer)
     {
-        if (pointer == 0 || !live.Remove(pointer)) return;
+        if (pointer == 0 || !live.Contains(pointer)) return;
+        // Keep registration intact if the caller violates the execution contract so cleanup can retry.
+        RequireFrameworkThread();
+        if (!live.Remove(pointer)) return;
         remove!.Original(pointer, 1);
     }
     public void Dispose()

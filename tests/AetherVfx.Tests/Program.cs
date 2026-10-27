@@ -188,6 +188,7 @@ Test("头部挂点写入绑定节点，所有主时间线引用该节点", () =>
     Assert(root.First(x => x.Tag == "TmLn").Children().Number("BnNo") == 0, "时间线挂点未引用");
 });
 count += CatalogTests.Run(source, resources);
+count += PreviewSessionTests.Run();
 if (args.Length > 0)
 {
     foreach (var file in Directory.EnumerateFiles(args[0], "*.avfx"))

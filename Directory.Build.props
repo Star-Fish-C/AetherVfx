@@ -4,5 +4,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <Deterministic>true</Deterministic>
+    <GameLibPath Condition="'$(GameLibPath)' == '' and '$(DALAMUD_HOME)' != ''">$(DALAMUD_HOME)</GameLibPath>
+    <GameLibPath Condition="'$(GameLibPath)' == ''">$(APPDATA)\XIVLauncherCN\addon\Hooks\dev</GameLibPath>
   </PropertyGroup>
 </Project>

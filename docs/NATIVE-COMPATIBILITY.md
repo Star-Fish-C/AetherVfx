@@ -1,0 +1,50 @@
+# 原生独立预览兼容性调查
+
+日期：2026-10-27。结论：**兼容性尚未确认，原生预览继续禁用。** 已推进到本机离线二进制核验，具体指令证据见 [本机原生核验](NATIVE-BINARY-20261027.md)；未进行运行时验证或最终根因定位。
+
+## 核验对象与证据
+
+本机客户端版本 `2026.10.06.0000.0000`，Dalamud `15.0.3.9`，FFXIVClientStructs `7.57.0.9602`。依赖 SHA-256 由验证脚本写入 `artifacts/validation/home/environment.json`。版本与此前崩溃环境一致，不能据此推断已有声明安全。
+
+已阅读的上游声明与实现：
+
+- [CharaView 固定版本源码](https://github.com/aers/FFXIVClientStructs/blob/a4e5e5d1ef05812aaafc358ff8003147a3b3c0e4/FFXIVClientStructs/FFXIV/Client/UI/Misc/CharaView.cs)：列出共享使用者、初始化状态、Initialize、Release、Dtor 和 Render。页面对应最新修改该文件的提交，不能直接等同本机 DLL 源码。
+- [ClientObjectManager 声明](https://github.com/aers/FFXIVClientStructs/blob/main/FFXIVClientStructs/FFXIV/Client/Game/Object/ClientObjectManager.cs)：提供角色对象操作，但不能证明普通角色分配索引可作为 CharaView 视图索引。
+- [VFXEditor Actor 创建与移除接口](https://github.com/0ceal0t/Dalamud-VFXEditor/blob/05f6eb0cce19a6a91ae275bce609299d573914b3/VFXEditor/Interop/ResourceLoader.Vfx.cs) 与 [ActorVfx 调用](https://github.com/0ceal0t/Dalamud-VFXEditor/blob/05f6eb0cce19a6a91ae275bce609299d573914b3/VFXEditor/Interop/Structs/Vfx/ActorVfx.cs)：支持当前调用形状的来源追溯，不构成本客户端 ABI 与线程安全证明。
+- 本机 `FFXIVClientStructs.xml`：存在对应 CharaView、ClientObjectManager、离屏相机和渲染目标成员。存在声明不代表拥有独占使用权。
+- [此前崩溃记录](2026-10-26_原生预览崩溃-report.md)：资源指针遍历触发访问违规；原始转储与验证附件未包含在源码仓库，本机未重新复现。
+
+## 五项启动门槛
+
+| 门槛 | 已知情况 | 缺少的证据 | 当前值 |
+|---|---|---|---|
+| ActorVFX ABI | 本机参数宽度已核对；返回的是 0x1E0 对象，不能按 0x390 的 Scene.VfxObject 强转；已移除错误强转和坐标写入 | 需要按实际模块指纹选择证据，不能全局批准其他客户端构建 | false |
+| VFX 生命周期 | 上游移除 detour 在原调用前撤销登记；本项目也登记指针 | 销毁与位置更新之间的线程时序、指针复用和原生卸载顺序 | false |
+| 视图独占申请 | CharaView 注释列出 0–7 号视图可用于队伍肖像，多个普通界面也共享视图 | 当前客户端认可的申请／占用协议；对象为空或模型未加载不是证明 | false |
+| 视图释放 | 本机 Dtor 不调用 Release；Release 清理载体、相机及回调 | 已明确释放顺序，还需确认游戏接管前的交还协议和线程 | false |
+| 框架线程 | 插件已有 Framework.Update 和 UiBuilder.Draw 回调 | 这些回调与原生更新／销毁线程的明确关系；不能假设任意回调可安全操作原生对象 | false |
+
+渲染通道另列为运行时观察项：存在角色纹理、半透明 GBuffer 或非空 SRV，不足以证明外部 ActorVFX 被该相机渲染。必须保存角色＋真实粒子的离屏画面，再检查透明度、遮挡和深度。该项从不由自动化句柄测试设为通过。
+
+## 已实施的限制
+
+`NativePreviewSafety.Compatibility` 的五项值均为 false。实验开关只存在于插件实例内，不能解除门槛。创建入口在资源映射之前检查停用状态；诊断不遍历 VFX 内部资源指针。
+
+旧独立适配器会先调用 Initialize，再用载体 DrawObject 是否为空推断槽位未使用；本版删除这条实现及相应原生销毁／纹理回读路径。当前适配器只负责状态与旧映射恢复，未接入原生分配器；即使单改兼容标记，也不会恢复旧路径。
+
+托管 PreviewSession 用于承载未来通过验证的资源租约：先租用视图，再注册映射，最后创建 VFX；释放逆序执行。它使用会话代次拒绝旧结果，错误清理不影响其余租约释放，任何释放失败都会阻止继续启动。它不验证原生指针有效性，也没有运行时原生资源。
+
+## 接入前的具体工作
+
+1. 确认本机客户端的 ABI、原生调用／销毁线程和 CharaView 槽位协议，记录可复核依据。不要直接套用上游旧的 index + 40 或此前观测到的 +240。
+2. 实现插件内部原生后端，所有申请、轮询、渲染、销毁遵循已确认的线程规则；后台仅做托管编译，结果返回受控线程后校验会话代次。
+3. 原生视图租约明确拥有的载体、相机和渲染目标；借用对象不能通过简单 IDisposable 声称所有权。确认冲突时停止，不销毁游戏接管的对象。
+4. 视图初始化使用单调时钟设置 30 秒上限；超时走失败清理，不自动重试。支持登出、换区、GPose、关闭和卸载取消。
+5. 接入原始路径素材、映射素材和组合，确认粒子通道后再接入相机交互及帧回读。实验开关仍按会话手动启用。
+6. 与用户约定时段后，按验收记录逐项运行；如果角色可见而粒子始终不可见，先定位渲染通道，不能继续按“已完成播放器”推进。
+
+## 验证时序
+
+加载插件（不分配原生资源）→ 用户启用实验开关 → 兼容检查通过 → 手动请求一项 → 创建受控会话 → 申请视图租约 → 等待角色／渲染目标准备 → 申请映射租约 → 创建 VFX 租约 → 人工确认画面 → 停止时逆序释放。
+
+本版在“兼容检查”处结束，不会进入后面的原生步骤。0.4 需要完成这些步骤并通过游戏内验收；0.5 再做隐藏模型的空场地。

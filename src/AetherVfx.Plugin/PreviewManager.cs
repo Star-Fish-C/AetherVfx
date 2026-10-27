@@ -26,9 +26,10 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
     private uint territory;
     private bool gpose;
     private DateTime nextDiagnostic;
-    public bool CenterOnActor { get; set; } = true;
     public string Diagnostic { get; private set; } = "尚未播放";
     public bool Active => effect != 0 || collection != Guid.Empty;
+    public PreviewStatus Snapshot => new(!NativePreviewSafety.Enabled ? PreviewState.Disabled : Active ? PreviewState.Playing : PreviewState.Idle,
+        !NativePreviewSafety.Enabled ? NativePreviewSafety.Message : Status, VfxCreated: effect != 0);
     public string Status { get; private set; } = "预览已停止";
 
     public void Recover()
@@ -45,6 +46,7 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
     }
     public void Play(PreviewPayload payload)
     {
+        NativePreviewSafety.RequireEnabled();
         var player = objects.LocalPlayer ?? throw new InvalidOperationException("请先登录角色");
         if (payload.NativeGamePath is { } path)
         {
@@ -53,7 +55,6 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
                 throw new InvalidOperationException("换区期间不能预览");
             actor = player.Address; isSelf = true; territory = client.TerritoryType; gpose = client.IsGPosing;
             effect = engine.Play(path, actor);
-            if (CenterOnActor) Center(player.Position, player.Rotation);
             Status = "原始游戏路径对照播放 · 不使用临时文件映射";
             Diagnostic = "等待资源状态；请与常规素材预览对照";
             nextDiagnostic = DateTime.UtcNow.AddSeconds(1);
@@ -64,6 +65,7 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
     }
     public void ShowFor(CompiledEffect compiled, int objectIndex, nint address, bool self, string? nativePath = null)
     {
+        NativePreviewSafety.RequireEnabled();
         Stop();
         if (condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas] || condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas51])
             throw new InvalidOperationException("换区期间不能预览");
@@ -102,7 +104,6 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
                 throw new InvalidOperationException("预览资源重定向未生效，未创建特效。请检查 Penumbra 是否启用及角色集合状态");
             actor = address; isSelf = self; territory = client.TerritoryType; gpose = client.IsGPosing;
             effect = engine.Play(resources.VfxPath, address);
-            if (self && objects.LocalPlayer is { } player && CenterOnActor) Center(player.Position, player.Rotation);
             nextDiagnostic = DateTime.UtcNow.AddSeconds(1);
             Diagnostic = "等待 AVFX 资源加载；已创建对象不等于画面可见";
             Status = "已提交 VFX 播放 · 单次特效结束后可重新播放";
@@ -120,7 +121,6 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
             effect = 0; Stop(); Status = "本次特效对象已结束；若始终无画面，请查看播放诊断";
             log.Information("AetherVfx 特效对象结束；最后诊断：{Diagnostic}", Diagnostic); return;
         }
-        if (isSelf && CenterOnActor && objects.LocalPlayer is { } player) Center(player.Position, player.Rotation);
         if (DateTime.UtcNow >= nextDiagnostic)
         {
             Diagnostic = engine.Describe(effect);
@@ -128,12 +128,11 @@ internal sealed class PreviewManager(IDalamudPluginInterface pi, IObjectTable ob
             log.Information("AetherVfx 播放诊断：{Diagnostic}", Diagnostic);
         }
     }
-    public void Center(System.Numerics.Vector3 position, float rotation)
-    { if (CenterOnActor) engine.Center(effect, position, rotation); }
     public void Stop()
     {
-        nint oldEffect = effect; effect = 0;
-        engine.Stop(oldEffect);
+        // A rejected native call must keep both the handle and its mappings available for cleanup retry.
+        engine.Stop(effect);
+        effect = 0;
         if (collection == Guid.Empty) return;
         if (ownsCollection) Check(delete.Invoke(collection)); else Check(remove.Invoke(tag, collection, Priority));
         collection = Guid.Empty; ownsCollection = false; actor = 0;

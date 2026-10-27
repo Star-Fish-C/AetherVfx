@@ -1,8 +1,10 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
     <AssemblyName>AetherVfx</AssemblyName>
-    <Version>0.3.3</Version>
+    <Version>0.3.4</Version>
     <DalamudLibPath Condition="'$(DALAMUD_HOME)' == ''">$(APPDATA)\XIVLauncherCN\addon\Hooks\dev\</DalamudLibPath>
+    <!-- SDK.props captures AssemblySearchPaths before this CN path override. -->
+    <AssemblySearchPaths>$(DalamudLibPath);$(AssemblySearchPaths)</AssemblySearchPaths>
     <PenumbraApiPath Condition="'$(PenumbraApiPath)' == ''">$(APPDATA)\XIVLauncherCN\installedPlugins\Penumbra\1.7.2.4\Penumbra.Api.dll</PenumbraApiPath>
   </PropertyGroup>
   <ItemGroup>

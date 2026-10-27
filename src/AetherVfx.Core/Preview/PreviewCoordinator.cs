@@ -7,6 +7,7 @@ public sealed record PreviewPayload(string Id, string Name, CompiledEffect Effec
 public interface IPreviewSurface
 {
     bool Active { get; }
+    PreviewStatus Snapshot { get; }
     void Play(PreviewPayload payload);
     void Stop();
 }
@@ -51,10 +52,20 @@ public sealed class PreviewCoordinator(IReadOnlyDictionary<PreviewMode, IPreview
         Stop();
         var surface = surfaces[mode];
         try { surface.Play(payload); Mode = mode; Scope = scope; ResourceId = payload.Id; }
-        catch { surface.Stop(); throw; }
+        catch (Exception startError)
+        {
+            try { surface.Stop(); }
+            catch (Exception stopError)
+            {
+                Mode = mode; Scope = scope; ResourceId = payload.Id;
+                throw new AggregateException("预览启动及清理均失败", startError, stopError);
+            }
+            throw;
+        }
     }
     public void Stop()
     {
+        // Preserve the surface identity when cleanup fails, so a later stop can retry.
         if (Mode is { } mode) surfaces[mode].Stop();
         Mode = null; Scope = null; ResourceId = null;
     }

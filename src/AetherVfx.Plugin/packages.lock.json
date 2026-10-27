@@ -16,6 +16,12 @@
       },
       "aethervfx.core": {
         "type": "Project"
+      },
+      "aethervfx.gamedata": {
+        "type": "Project",
+        "dependencies": {
+          "AetherVfx.Core": "[1.0.0, )"
+        }
       }
     }
   }

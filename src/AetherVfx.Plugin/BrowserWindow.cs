@@ -35,6 +35,8 @@ public sealed partial class Plugin
     {
         layoutPath = Path.Combine(config, "layout.json");
         Run(() => { if (File.Exists(layoutPath)) layout = JsonSerializer.Deserialize<BrowserLayout>(File.ReadAllText(layoutPath), ProjectStore.Json) ?? new(); });
+        // This development milestone always opens on the independent surface; never auto-play on load.
+        layout.Mode = PreviewMode.Window;
         string sqpack = data.GameData.DataPath.FullName;
         string snapshots = PluginAssetPaths.AssetsDirectory(pi.AssemblyLocation);
         browserInitialization = Task.Run(async () =>
@@ -93,15 +95,15 @@ public sealed partial class Plugin
         ImGui.SetNextItemWidth(Math.Max(180, ImGui.GetContentRegionAvail().X - 360));
         ImGui.InputTextWithHint("##联合搜索", "搜索名称、别名、路径、地区、怪物或副本…", ref search, 256);
         ImGui.SameLine();
-        if (ImGui.BeginCombo("##预览方式", layout.Mode == PreviewMode.Window ? "独立窗口（原生通道待验收）" : "自身预览（直接播放）"))
+        if (ImGui.BeginCombo("##预览方式", layout.Mode == PreviewMode.Window ? "独立窗口（兼容检查未通过）" : "自身预览（已停用）"))
         {
             foreach (var mode in Enum.GetValues<PreviewMode>())
-                if (ImGui.Selectable(mode == PreviewMode.Self ? "游戏画面中的自身" : "窗口内角色副本／空场景", layout.Mode == mode))
-                    Run(() => { coordinator.Stop(); layout.Mode = mode; SaveLayout(); if (Asset is not null) PlayAsset(); });
+                if (ImGui.Selectable(mode == PreviewMode.Self ? "游戏画面中的自身（已停用）" : "窗口内角色与特效（待验收）", layout.Mode == mode))
+                    Run(() => { StopPreview(); layout.Mode = mode; SaveLayout(); });
             ImGui.EndCombo();
         }
-        if (ImGui.Button("打开空场地预览窗口（实验）")) Run(OpenEmptyPreview);
-        ImGui.SameLine(); ImGui.TextDisabled("单独显示特效；粒子通道待验证");
+        if (ImGui.Button("打开独立预览面板")) Run(OpenIndependentPreview);
+        ImGui.SameLine(); ImGui.TextDisabled("角色与特效同屏 · 原生功能待验证");
         RefreshRows();
         float height = Math.Max(280, ImGui.GetContentRegionAvail().Y - 112);
         float totalWidth = ImGui.GetContentRegionAvail().X;
@@ -155,11 +157,13 @@ public sealed partial class Plugin
         }
         if (ImGui.BeginMenu("预览"))
         {
-            if (ImGui.MenuItem("空场地独立预览（实验）")) Run(OpenEmptyPreview);
+            if (ImGui.MenuItem("打开独立预览面板")) Run(OpenIndependentPreview);
             if (ImGui.MenuItem("播放选中素材", "", false, Asset is not null)) Run(PlayAsset);
-            if (ImGui.MenuItem("播放当前组合")) Run(() => { StartPreview(); autoPreview = true; });
-            if (ImGui.MenuItem("停止并恢复")) Run(() => { autoPreview = false; coordinator.Stop(); });
+            if (ImGui.MenuItem("播放当前组合")) Run(StartPreview);
+            if (ImGui.MenuItem("停止并恢复")) Run(StopPreview);
+            ImGui.BeginDisabled(!coordinator.Active);
             ImGui.MenuItem("调整组合时自动更新", "", ref autoPreview);
+            ImGui.EndDisabled();
             ImGui.EndMenu();
         }
         if (ImGui.BeginMenu("索引"))
@@ -175,7 +179,7 @@ public sealed partial class Plugin
         {
             ImGui.MenuItem("分类树", "", ref layout.ShowTree);
             ImGui.MenuItem("素材列表", "", ref layout.ShowList);
-            if (ImGui.MenuItem("预览面板", "", ref layout.ShowPreview) && !layout.ShowPreview && layout.Mode == PreviewMode.Window) Run(coordinator.Stop);
+            if (ImGui.MenuItem("预览面板", "", ref layout.ShowPreview) && !layout.ShowPreview && layout.Mode == PreviewMode.Window) Run(StopPreview);
             ImGui.MenuItem("组合编辑区", "", ref layout.ShowEditor);
             ImGui.MenuItem("预览弹出窗口", "", ref layout.PreviewPopout);
             if (ImGui.MenuItem("保存布局")) Run(SaveLayout);
@@ -284,6 +288,7 @@ public sealed partial class Plugin
     private void PlayAsset()
     {
         if (!NativePreviewSafety.Enabled) { message = NativePreviewSafety.Message; return; }
+        if (layout.Mode == PreviewMode.Window && !windowPreview.Access.CanStart) { message = windowPreview.Access.Diagnostic; return; }
         var record = Asset ?? throw new InvalidOperationException("先选择一个特效");
         autoPreview = false; coordinator.Stop();
         try
@@ -300,29 +305,26 @@ public sealed partial class Plugin
     private void DrawPreviewPanel()
     {
         ImGui.TextUnformatted(coordinator.Scope == PreviewScope.Composition ? "当前：组合 · " + project.Name : "当前：素材预览");
-        ImGui.BeginDisabled(!NativePreviewSafety.Enabled);
+        bool canPlay = NativePreviewSafety.Enabled && (layout.Mode != PreviewMode.Window || windowPreview.Access.CanStart);
+        ImGui.BeginDisabled(!canPlay);
         if (ImGui.Button("播放素材")) Run(PlayAsset);
-        ImGui.SameLine(); if (ImGui.Button("组合预览")) Run(() => { StartPreview(); autoPreview = true; });
-        ImGui.SameLine(); if (ImGui.Button("停止")) Run(coordinator.Stop);
+        ImGui.SameLine(); if (ImGui.Button("组合预览")) Run(StartPreview);
         ImGui.EndDisabled();
+        ImGui.SameLine(); if (ImGui.Button("停止")) Run(StopPreview);
         ImGui.SameLine(); ImGui.BeginDisabled(Asset is null);
         if (ImGui.Button("加入组合")) AddEffect(Asset!); ImGui.EndDisabled();
         if (layout.Mode == PreviewMode.Window)
         {
-            bool empty = windowPreview.EmptyScene, grid = windowPreview.ShowGrid;
-            if (ImGui.Checkbox("空场地（隐藏预览角色）", ref empty)) windowPreview.EmptyScene = empty;
-            ImGui.SameLine(); if (ImGui.Checkbox("参考网格", ref grid)) windowPreview.ShowGrid = grid;
-            ImGui.SameLine(); if (ImGui.SmallButton("重置视角")) windowPreview.ResetCamera();
-            ImGui.SameLine(); if (ImGui.SmallButton("取景")) windowPreview.Fit();
-            var color = windowPreview.Background; if (ImGui.ColorEdit4("背景", ref color, ImGuiColorEditFlags.NoInputs)) windowPreview.Background = color;
-            ImGui.TextWrapped(windowPreview.Status);
+            bool experiment = windowPreview.Access.ExperimentEnabled;
+            if (ImGui.Checkbox("本次会话启用实验预览（仍须通过兼容检查）", ref experiment))
+                Run(() => { StopPreview(); windowPreview.SetExperimentEnabled(experiment); });
+            var state = windowPreview.Snapshot;
+            ImGui.TextWrapped($"状态：{state.State} · 视图就绪：{state.ViewReady} · VFX 已创建：{state.VfxCreated} · 视觉验收：{state.VisualAcceptance}");
             ImGui.TextWrapped(windowPreview.Diagnostic);
             windowPreview.Draw(new(ImGui.GetContentRegionAvail().X, Math.Max(60, ImGui.GetContentRegionAvail().Y - 70)));
         }
         else
         {
-            bool center = preview.CenterOnActor;
-            if (ImGui.Checkbox("以自身位置为预览中心并跟随移动", ref center)) preview.CenterOnActor = center;
             ImGui.BeginDisabled(!NativePreviewSafety.Enabled);
             if (ImGui.Button("测试自身光环（原始游戏路径）")) Run(() =>
             {
@@ -332,7 +334,7 @@ public sealed partial class Plugin
                 coordinator.Play(PreviewMode.Self, PreviewScope.Asset, new("reference-aura", "自身光环对照", effect, path));
             });
             ImGui.EndDisabled();
-            ImGui.TextWrapped("根坐标跟随自身；资源内部挂点、偏移或事件条件仍可能影响显示。" + preview.Status);
+            ImGui.TextWrapped("使用素材自身的角色挂点；原生返回句柄不作为图形对象读取或写入。" + preview.Status);
             ImGui.TextWrapped(preview.Diagnostic);
         }
         if (ImGui.SmallButton("复制播放诊断")) ImGui.SetClipboardText((layout.Mode == PreviewMode.Window ? windowPreview.Status + "\n" + windowPreview.Diagnostic : preview.Status + "\n" + preview.Diagnostic) + "\n素材：" + selectedAsset);
@@ -343,15 +345,11 @@ public sealed partial class Plugin
             ImGui.TextWrapped(DisplayName(record));
         }
     }
-    private void OpenEmptyPreview()
+    private void OpenIndependentPreview()
     {
-        bool composition = coordinator.Scope == PreviewScope.Composition;
-        coordinator.Stop();
+        StopPreview();
         layout.Mode = PreviewMode.Window; layout.ShowPreview = true; layout.PreviewPopout = true;
-        windowPreview.EmptyScene = true;
         SaveLayout();
-        if (composition) StartPreview();
-        else if (Asset is not null) PlayAsset();
     }
     private void DrawIndexStatus()
     {
@@ -377,7 +375,7 @@ public sealed partial class Plugin
             ImGui.SetNextWindowSize(new(700, 600), ImGuiCond.FirstUseEver);
             bool visible = true;
             if (ImGui.Begin("独立预览###AetherVfxPreview", ref visible)) Run(DrawPreviewPanel); ImGui.End();
-            if (!visible) { layout.ShowPreview = false; Run(coordinator.Stop); }
+            if (!visible) { layout.ShowPreview = false; Run(StopPreview); }
         }
         if (settingsOpen)
         {
@@ -466,5 +464,5 @@ internal sealed class BrowserLayout
 {
     public bool ShowTree = true, ShowList = true, ShowPreview = true, ShowEditor = true, PreviewPopout;
     public float TreeWidth = 210, ListWidth = 370, PreviewHeight = 330;
-    public PreviewMode Mode = PreviewMode.Self;
+    public PreviewMode Mode = PreviewMode.Window;
 }

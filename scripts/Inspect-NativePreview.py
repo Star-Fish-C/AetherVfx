@@ -1,0 +1,182 @@
+"""Read-only PE/signature analysis. Output stays in ignored artifacts; never executes the game.
+
+python -m pip install --target artifacts/tools/python capstone pefile
+python scripts/Inspect-NativePreview.py <ffxiv_dx11.exe>
+Decompiled local ClientStructs files may be placed in artifacts/native-analysis/structs.
+This report establishes addresses/control flow, not runtime safety or visual acceptance.
+"""
+from pathlib import Path
+import argparse
+import bisect
+import hashlib
+import json
+import re
+import struct
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'artifacts/tools/python'))
+import capstone
+import pefile
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('executable', type=Path)
+    parser.add_argument('--function', action='append', default=[], help='Extra RVA or start:end range, in hex')
+    parser.add_argument('--references', action='append', default=[], help='Find direct call/jump references to a hex RVA; indirect calls are not covered')
+    parser.add_argument('--field-offset', action='append', default=[], help='Find memory operands with this hex displacement (candidates, not a type identification)')
+    args = parser.parse_args()
+    binary = args.executable.read_bytes()
+    pe = pefile.PE(data=binary)
+    base = pe.OPTIONAL_HEADER.ImageBase
+    image = pe.get_memory_mapped_image()
+    text = next(s for s in pe.sections if s.Name.rstrip(b'\0') == b'.text')
+    text_data = text.get_data()
+    text_rva = text.VirtualAddress
+    entries = sorted((e.struct.BeginAddress, e.struct.EndAddress) for e in pe.DIRECTORY_ENTRY_EXCEPTION)
+    starts = [a for a, _ in entries]
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+    md.detail = True
+    output = ROOT / 'artifacts/native-analysis'
+    output.mkdir(parents=True, exist_ok=True)
+    report = {'ExecutableSHA256': hashlib.sha256(binary).hexdigest(), 'ImageBase': hex(base),
+              'Signatures': {}, 'Vtables': {}, 'Functions': {}}
+    functions = {}
+    # Decode from the enclosing unwind range to reject opcode bytes embedded in instructions.
+    # This still is not a complete CFG: indirect callers and code without unwind metadata are omitted.
+    boundaries = {}
+    report['DirectReferences'] = {}
+    requested_refs = {int(value, 16) for value in args.references}
+    report['FieldCandidates'] = {}
+    for value in args.field_offset:
+        displacement = int(value, 16)
+        candidates = []
+        encoded = struct.pack('<i', displacement)
+        for match in re.finditer(re.escape(encoded), text_data):
+            site = text_rva + match.start()
+            index = bisect.bisect_right(starts, site) - 1
+            if index < 0 or not entries[index][0] <= site < entries[index][1]:
+                continue
+            start, end = entries[index]
+            if start not in boundaries:
+                boundaries[start] = {ins.address - base: ins for ins in md.disasm(image[start:end], base + start)}
+            for address, ins in boundaries[start].items():
+                if not address <= site < address + ins.size:
+                    continue
+                if any(op.type == capstone.CS_OP_MEM and op.mem.disp == displacement for op in ins.operands):
+                    candidates.append({'Site': hex(address), 'Instruction': f'{ins.mnemonic} {ins.op_str}', 'UnwindRange': [hex(start), hex(end)]})
+                    functions.setdefault(start, (end, f'candidate field {displacement:#x}'))
+        report['FieldCandidates'][hex(displacement)] = candidates
+    for match in re.finditer(b'[\xe8\xe9]', text_data):
+        if not requested_refs:
+            break
+        offset = match.start()
+        if offset + 5 > len(text_data):
+            continue
+        site = text_rva + offset
+        target = site + 5 + struct.unpack_from('<i', text_data, offset + 1)[0]
+        if target not in requested_refs:
+            continue
+        index = bisect.bisect_right(starts, site) - 1
+        if index < 0 or not entries[index][0] <= site < entries[index][1]:
+            continue
+        start, end = entries[index]
+        if start not in boundaries:
+            boundaries[start] = {ins.address - base: ins for ins in md.disasm(image[start:end], base + start)}
+        ins = boundaries[start].get(site)
+        if ins is None or ins.mnemonic not in ('call', 'jmp') or ins.size != 5:
+            continue
+        report['DirectReferences'].setdefault(hex(target), []).append({'Site': hex(site), 'Instruction': ins.mnemonic, 'UnwindRange': [hex(start), hex(end)]})
+        functions.setdefault(start, (end, f'caller of {target:#x}'))
+
+    def scan(signature):
+        pattern = b''.join(b'.' if b == '??' else re.escape(bytes.fromhex(b)) for b in signature.split())
+        return [text_rva + m.start() for m in re.finditer(pattern, text_data, re.DOTALL)]
+
+    def add_function(rva, name):
+        index = bisect.bisect_right(starts, rva) - 1
+        if index >= 0 and entries[index][0] <= rva < entries[index][1]:
+            start, end = entries[index]
+        else:
+            start, end = rva, rva + 256
+        functions.setdefault(start, (end, name))
+        return start
+
+    signatures = {}
+    for source in (output / 'structs').glob('*.cs'):
+        for name, sig, relative in re.findall(r'new Address\("([^\"]+)", "([^\"]+)", new ushort\[\d+\] \{ (\d+) \}', source.read_text(encoding='utf-8-sig')):
+            signatures[name] = (sig, int(relative))
+    signatures['ActorVfxCreate'] = ('40 53 55 56 57 48 81 EC ?? ?? ?? ?? 0F 29 B4 24 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? 0F B6 AC 24 ?? ?? ?? ?? 0F 28 F3 49 8B F8', None)
+    signatures['ActorRemoveVtable'] = ('0F 11 48 10 48 8D 05', None)
+    for name, (sig, relative) in signatures.items():
+        hits = scan(sig)
+        targets = []
+        for hit in hits:
+            if image[hit] in (0xE8, 0xE9):
+                target = hit + 5 + struct.unpack_from('<i', image, hit + 1)[0]
+            elif name.endswith(('.Instance', '.StaticVirtualTable')) and relative is not None:
+                target = hit + relative + 4 + struct.unpack_from('<i', image, hit + relative)[0]
+            else:
+                target = hit
+            targets.append(target)
+            if not name.endswith(('.Instance', '.StaticVirtualTable')):
+                add_function(target, name)
+            elif name.endswith('.StaticVirtualTable'):
+                # The signature points to a RIP-relative LEA, not executable vtable data.
+                pointers = [struct.unpack_from('<Q', image, target + 8 * i)[0] - base for i in range(32)]
+                report['Vtables'][hex(target)] = [hex(x) for x in pointers]
+                for i in (30, 31):
+                    if text_rva <= pointers[i] < text_rva + len(text_data):
+                        add_function(pointers[i], f'{name}.vfunc{i}')
+        report['Signatures'][name] = {'Matches': [hex(x) for x in hits], 'Targets': [hex(x) for x in targets],
+                                      'Kind': 'Vtable' if name.endswith('.StaticVirtualTable') else 'RipRelativeStorage' if name.endswith('.Instance') else 'Code'}
+        if name == 'ActorRemoveVtable':
+            for hit in hits:
+                table = hit + 11 + struct.unpack_from('<i', image, hit + 7)[0]
+                pointers = [struct.unpack_from('<Q', image, table + 8 * i)[0] - base for i in range(4)]
+                report['Vtables'][hex(table)] = [hex(x) for x in pointers]
+                add_function(pointers[0], 'ActorRemove')
+    # Constructor LEA references to read-only data reveal vtables without relying on guessed offsets.
+    for start, (end, name) in list(functions.items()):
+        if not name.endswith('CharaView.Ctor'):
+            continue
+        for ins in md.disasm(image[start:end], base + start):
+            if ins.mnemonic == 'lea' and len(ins.operands) == 2 and ins.operands[1].type == capstone.CS_OP_MEM:
+                mem = ins.operands[1].mem
+                if mem.base != capstone.x86.X86_REG_RIP:
+                    continue
+                table = ins.address + ins.size + mem.disp - base
+                section = pe.get_section_by_rva(table)
+                if section is None or section.Name.rstrip(b'\0') != b'.rdata':
+                    continue
+                pointers = [struct.unpack_from('<Q', image, table + 8 * i)[0] - base for i in range(12)]
+                if not all(text_rva <= x < text_rva + len(text_data) for x in pointers):
+                    continue
+                report['Vtables'][hex(table)] = [hex(x) for x in pointers]
+                for i, target in enumerate(pointers):
+                    add_function(target, f'CharaView.vfunc{i}')
+    for rva in args.function:
+        if ':' in rva:
+            start, end = (int(x, 16) for x in rva.split(':'))
+            if not text_rva <= start < end <= text_rva + len(text_data):
+                raise ValueError('Requested range outside .text')
+            functions[start] = (end, 'requested explicit range')
+        else:
+            add_function(int(rva, 16), 'requested')
+    lines = []
+    for start, (end, name) in sorted(functions.items()):
+        lines.append(f'\n## {name} RVA {start:#x}..{end:#x}\n')
+        calls = []
+        for ins in md.disasm(image[start:end], base + start):
+            lines.append(f'{ins.address - base:08x}  {ins.mnemonic:8} {ins.op_str}')
+            if ins.mnemonic == 'call' and ins.operands[0].type == capstone.CS_OP_IMM:
+                calls.append(hex(ins.operands[0].imm - base))
+        report['Functions'][hex(start)] = {'Name': name, 'End': hex(end), 'DirectCalls': calls}
+    (output / 'functions.txt').write_text('\n'.join(lines), encoding='utf-8')
+    (output / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    print(json.dumps({'ExecutableSHA256': report['ExecutableSHA256'], 'Signatures': report['Signatures'], 'Vtables': report['Vtables']}, indent=2))
+
+
+if __name__ == '__main__':
+    main()
