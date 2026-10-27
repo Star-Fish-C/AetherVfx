@@ -13,7 +13,8 @@ internal sealed class WindowPreviewAdapter : IPreviewSurface, IDisposable
     private readonly PreviewSession session = new();
     private readonly PreviewManager legacyRecovery;
     public PreviewAccess Access { get; } = new(NativePreviewSafety.Compatibility);
-    public bool Active => session.Active;
+    // A failed cleanup still owns resources; retain the coordinator's surface identity.
+    public bool Active => session.Active || session.CleanupPending;
     public PreviewStatus Snapshot => session.Status;
     public string Status => Snapshot.Message;
     public string Diagnostic => Access.Diagnostic + "；视觉验收=" + Snapshot.VisualAcceptance;
@@ -49,6 +50,7 @@ internal sealed class WindowPreviewAdapter : IPreviewSurface, IDisposable
     public void Stop()
     {
         session.Stop();
+        if (session.CleanupPending) throw new InvalidOperationException(session.Status.Message);
         if (!Access.CanStart) session.Disable(Access.Diagnostic);
     }
     public void Dispose() { session.Dispose(); legacyRecovery.Dispose(); }

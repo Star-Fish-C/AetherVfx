@@ -3,6 +3,8 @@
 artifacts/
 *.user
 .vs/
+__pycache__/
+*.pyc
 *.log
 *.dmp
 *.pmp

@@ -58,26 +58,135 @@ static class PreviewSessionTests
             }
             session.Stop(); Assert(released == 199, "切换或过期资源泄漏");
         });
-        Test("释放某项失败仍清理其他资源，并禁止继续播放", () =>
+        Test("释放失败时保留失败资源及其依赖，禁止隐式重试和继续播放", () =>
         {
-            using var session = new PreviewSession(); var order = new List<string>();
+            var session = new PreviewSession(); var order = new List<string>();
             long ticket = session.Begin(Ready());
             session.Own(ticket, new Lease(() => order.Add("view")));
             session.Own(ticket, new Lease(() => { order.Add("mapping"); throw new InvalidOperationException("remove failed"); }));
             session.Own(ticket, new Lease(() => order.Add("vfx")));
             session.Stop(); session.Stop();
-            Assert(order.SequenceEqual(new[] { "vfx", "mapping", "view" }), "失败中断了其余资源清理");
+            Assert(order.SequenceEqual(new[] { "vfx", "mapping" }), "失败资源或它的依赖被重复释放");
             Reject(() => session.Begin(Ready()));
             Assert(session.Status.State == PreviewState.Failed && session.Status.Message.Contains("remove failed"), "清理错误丢失");
+            Reject(session.RetryFailedCleanup);
+            Reject(session.Dispose);
         });
         Test("过期资源释放失败停止新会话并保留故障", () =>
         {
-            using var session = new PreviewSession(); long old = session.Begin(Ready());
+            var session = new PreviewSession(); long old = session.Begin(Ready());
             long current = session.Begin(Ready()); int released = 0;
             session.Own(current, new Lease(() => released++));
             session.Own(old, new Lease(() => throw new InvalidOperationException("late release")));
-            Assert(released == 1 && !session.Active, "过期释放失败后仍运行");
+            Assert(released == 0 && !session.Active, "过期释放失败时未保留当前资源");
             Reject(() => session.Begin(Ready()));
+            Reject(session.Dispose);
+        });
+        Test("仅明确承诺安全重试的租约可重新清理，成功后按顺序释放依赖", () =>
+        {
+            using var session = new PreviewSession(); var order = new List<string>(); int attempts = 0;
+            long ticket = session.Begin(Ready());
+            session.Own(ticket, new Lease(() => order.Add("view")));
+            session.Own(ticket, new RetryableLease(() =>
+            {
+                order.Add("vfx");
+                if (++attempts == 1) throw new InvalidOperationException("temporarily unavailable");
+            }));
+            session.Stop(); session.Stop();
+            Assert(order.SequenceEqual(new[] { "vfx" }), "隐式重试或提前释放依赖");
+            session.RetryFailedCleanup();
+            Assert(order.SequenceEqual(new[] { "vfx", "vfx", "view" }), "重试后清理顺序错误");
+            Assert(session.Status.State == PreviewState.Idle && session.Begin(Ready()) != ticket, "成功清理后未恢复");
+        });
+        Test("多个失败租约不会在恢复上层时隐式重试下层", () =>
+        {
+            var session = new PreviewSession(); var order = new List<string>();
+            long ticket = session.Begin(Ready());
+            session.Own(ticket, new Lease(() => order.Add("view")));
+            session.Own(ticket, new Lease(() => { order.Add("mapping"); throw new InvalidOperationException("mapping failure"); }));
+            session.Stop();
+            int lateAttempts = 0;
+            session.Own(ticket, new RetryableLease(() =>
+            {
+                order.Add("late");
+                if (++lateAttempts == 1) throw new InvalidOperationException("late failure");
+            }));
+            session.RetryFailedCleanup();
+            Assert(order.SequenceEqual(new[] { "mapping", "late", "late" }), "重试上层时错误清理了下层");
+            Assert(session.Status.State == PreviewState.Failed, "下层错误被清除");
+            Reject(session.RetryFailedCleanup);
+            Reject(session.Dispose);
+        });
+        Test("卸载清理失败保留会话，安全重试成功后才能完成卸载", () =>
+        {
+            var session = new PreviewSession(); int attempts = 0, viewReleased = 0;
+            long ticket = session.Begin(Ready());
+            session.Own(ticket, new Lease(() => viewReleased++));
+            session.Own(ticket, new RetryableLease(() =>
+            {
+                if (++attempts == 1) throw new InvalidOperationException("cleanup pending");
+            }));
+            Reject(session.Dispose);
+            Reject(() => session.Begin(Ready()));
+            Assert(attempts == 1 && viewReleased == 0, "卸载失败时提前释放依赖");
+            session.RetryFailedCleanup(); session.Dispose();
+            Assert(attempts == 2 && viewReleased == 1, "重试卸载后资源未释放");
+            try { session.Begin(Ready()); throw new Exception("卸载后可播放"); } catch (ObjectDisposedException) { }
+        });
+        Test("卸载后迟到资源释放失败时仍允许明确安全重试", () =>
+        {
+            var session = new PreviewSession(); int attempts = 0;
+            long ticket = session.Begin(Ready()); session.Dispose();
+            Assert(!session.Own(ticket, new RetryableLease(() =>
+            {
+                if (++attempts == 1) throw new InvalidOperationException("late cleanup pending");
+            })), "卸载后接管了资源");
+            session.RetryFailedCleanup(); session.Dispose();
+            Assert(attempts == 2, "迟到资源未安全重试");
+            try { session.Begin(Ready()); throw new Exception("卸载后可播放"); } catch (ObjectDisposedException) { }
+        });
+        Test("协调器在资源清理失败时保留预览身份，恢复后才能清除", () =>
+        {
+            var surface = new SessionSurface();
+            var coordinator = new PreviewCoordinator(new Dictionary<PreviewMode, IPreviewSurface> { [PreviewMode.Window] = surface });
+            coordinator.Play(PreviewMode.Window, PreviewScope.Asset, new("asset", "test", null!));
+            Reject(coordinator.Stop);
+            Assert(coordinator.Mode == PreviewMode.Window && coordinator.Active && surface.ViewReleased == 0, "协调器丢失仍被持有的资源");
+            surface.Session.RetryFailedCleanup(); coordinator.Stop();
+            Assert(coordinator.Mode is null && surface.ViewReleased == 1, "清理完成后未恢复停止状态");
+            surface.Session.Dispose();
+        });
+        Test("清理回调中迟到资源失败不会误删租约或释放依赖", () =>
+        {
+            using var session = new PreviewSession(); var order = new List<string>(); int attempts = 0;
+            long ticket = session.Begin(Ready());
+            session.Own(ticket, new Lease(() => order.Add("view")));
+            session.Own(ticket, new Lease(() =>
+            {
+                order.Add("vfx");
+                Reject(() => session.Begin(Ready()));
+                Reject(session.Dispose);
+                session.Own(ticket, new RetryableLease(() =>
+                {
+                    order.Add("late");
+                    if (++attempts == 1) throw new InvalidOperationException("late failure");
+                }));
+            }));
+            session.Stop(); session.Stop();
+            Assert(order.SequenceEqual(new[] { "vfx", "late" }) && session.Status.State == PreviewState.Failed, "重入清理丢失错误或提前释放依赖");
+            session.RetryFailedCleanup();
+            Assert(order.SequenceEqual(new[] { "vfx", "late", "late", "view" }), "重试错误释放已完成的租约");
+        });
+        Test("重复或过期提交已持有的同一租约不会导致提前释放", () =>
+        {
+            using var session = new PreviewSession(); int released = 0;
+            long old = session.Begin(Ready()); long current = session.Begin(Ready());
+            var lease = new Lease(() => released++);
+            session.Own(current, lease);
+            Reject(() => session.Own(current, lease));
+            Reject(() => session.Own(old, lease));
+            Assert(released == 0 && session.Active, "重复提交导致活动资源被释放");
+            session.Stop(); Assert(released == 1, "原有租约未正确释放");
         });
         Test("超时与场景终止废弃会话，卸载后迟到资源立即释放", () =>
         {
@@ -109,6 +218,30 @@ static class PreviewSessionTests
         throw new Exception("应拒绝操作");
     }
     private sealed class Lease(Action release) : IDisposable { public void Dispose() => release(); }
+    private sealed class RetryableLease(Action release) : IRetryablePreviewLease { public void Dispose() => release(); }
+    private sealed class SessionSurface : IPreviewSurface
+    {
+        public readonly PreviewSession Session = new();
+        public int ViewReleased;
+        private int attempts;
+        public bool Active => Session.Active || Session.CleanupPending;
+        public PreviewStatus Snapshot => Session.Status;
+        public void Play(PreviewPayload _)
+        {
+            long ticket = Session.Begin(Ready());
+            Session.Own(ticket, new Lease(() => ViewReleased++));
+            Session.Own(ticket, new RetryableLease(() =>
+            {
+                if (++attempts == 1) throw new InvalidOperationException("cleanup pending");
+            }));
+            Session.MarkViewReady(ticket); Session.MarkVfxCreated(ticket);
+        }
+        public void Stop()
+        {
+            Session.Stop();
+            if (Session.CleanupPending) throw new InvalidOperationException(Session.Status.Message);
+        }
+    }
     private sealed class BrokenSurface : IPreviewSurface
     {
         public bool FailStop = true;

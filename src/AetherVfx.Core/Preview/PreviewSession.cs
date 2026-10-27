@@ -32,20 +32,27 @@ public sealed class PreviewAccess(PreviewCompatibility compatibility)
     }
 }
 
+// Opt in only when a failed Dispose leaves ownership intact and retrying it is safe.
+public interface IRetryablePreviewLease : IDisposable { }
+
 // Framework-thread confined. Async producers must dispatch completion back to that thread.
 // Leases must represent resources the caller actually owns; no borrowed native pointer is a lease.
 public sealed class PreviewSession : IDisposable
 {
-    private readonly Stack<IDisposable> leases = new();
+    private readonly LinkedList<IDisposable> leases = new();
+    private readonly HashSet<IDisposable> ownedLeases = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<IDisposable> failedLeases = new(ReferenceEqualityComparer.Instance);
     private long generation;
-    private bool disposed, cleanupFailed;
+    private bool disposed, cleanupFailed, releasing;
     public long Generation => generation;
     public PreviewStatus Status { get; private set; } = new(PreviewState.Idle, "预览已停止");
     public bool Active => Status.State is PreviewState.Initializing or PreviewState.Playing;
+    public bool CleanupPending => cleanupFailed;
 
     public long Begin(PreviewAccess access)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+        if (releasing) throw new InvalidOperationException("资源清理进行中，不能启动预览");
         Stop();
         if (cleanupFailed) throw new InvalidOperationException(Status.Message);
         if (!access.CanStart)
@@ -61,17 +68,25 @@ public sealed class PreviewSession : IDisposable
     public bool Own(long ticket, IDisposable lease)
     {
         ArgumentNullException.ThrowIfNull(lease);
+        if (ownedLeases.Contains(lease)) throw new InvalidOperationException("不能重复接管同一个资源租约");
         if (!IsCurrent(ticket))
         {
             try { lease.Dispose(); }
             catch (Exception ex)
             {
-                Stop(); cleanupFailed = true;
-                Status = new(PreviewState.Failed, "过期资源释放失败，禁止重新播放：" + ex.Message + "；" + Status.Message);
+                // A late resource can still depend on live resources; retain it and the whole
+                // current stack rather than tearing down dependencies underneath it.
+                generation++;
+                leases.AddLast(lease);
+                ownedLeases.Add(lease);
+                failedLeases.Add(lease);
+                cleanupFailed = true;
+                Status = new(PreviewState.Failed, "过期资源释放失败，已保留资源及依赖并禁止重新播放：" + ex.Message);
             }
             return false;
         }
-        leases.Push(lease);
+        leases.AddLast(lease);
+        ownedLeases.Add(lease);
         return true;
     }
     public bool MarkViewReady(long ticket)
@@ -101,22 +116,59 @@ public sealed class PreviewSession : IDisposable
     public void Stop()
     {
         generation++;
-        var failures = new List<string>();
-        while (leases.TryPop(out var lease))
+        if (cleanupFailed || releasing) return; // Never retry an arbitrary IDisposable implicitly.
+        ReleaseInOrder(false);
+    }
+    public void RetryFailedCleanup()
+    {
+        if (releasing) throw new InvalidOperationException("资源清理进行中，不能重试");
+        if (!cleanupFailed) return;
+        if (leases.Last?.Value is not IRetryablePreviewLease)
+            throw new InvalidOperationException("失败资源未声明安全重试，保留该资源及其依赖");
+        cleanupFailed = false;
+        ReleaseInOrder(true);
+    }
+    private void ReleaseInOrder(bool retryFirst)
+    {
+        releasing = true;
+        try
         {
-            try { lease.Dispose(); }
-            catch (Exception ex) { failures.Add(ex.Message); }
+            while (leases.Last is { } node)
+            {
+                var lease = node.Value;
+                if (failedLeases.Contains(lease))
+                {
+                    if (!retryFirst || lease is not IRetryablePreviewLease)
+                    {
+                        cleanupFailed = true;
+                        Status = new(PreviewState.Failed, "资源清理仍待处理，已保留该资源及依赖");
+                        return;
+                    }
+                    failedLeases.Remove(lease);
+                    retryFirst = false;
+                }
+                try { lease.Dispose(); leases.Remove(node); ownedLeases.Remove(lease); }
+                catch (Exception ex)
+                {
+                    // Keep the failed lease and all earlier leases it may depend on.
+                    failedLeases.Add(lease);
+                    cleanupFailed = true;
+                    Status = new(PreviewState.Failed, "资源释放失败，已保留资源及依赖并禁止重新播放：" + ex.Message);
+                    return;
+                }
+                // A synchronous callback may have delivered a late lease that failed cleanup.
+                if (cleanupFailed) return;
+            }
+            Status = new(PreviewState.Idle, "预览已停止");
         }
-        if (failures.Count > 0)
-        {
-            cleanupFailed = true;
-            Status = new(PreviewState.Failed, "资源释放失败，禁止重新播放：" + string.Join("；", failures));
-        }
-        else if (!cleanupFailed && Status.State != PreviewState.Failed) Status = new(PreviewState.Idle, "预览已停止");
+        finally { releasing = false; }
     }
     public void Dispose()
     {
-        if (disposed) return;
-        Stop(); disposed = true;
+        if (releasing) throw new InvalidOperationException("资源清理进行中，不能卸载预览会话");
+        if (disposed && !cleanupFailed) return;
+        if (!disposed) Stop();
+        if (cleanupFailed) throw new InvalidOperationException(Status.Message);
+        disposed = true;
     }
 }

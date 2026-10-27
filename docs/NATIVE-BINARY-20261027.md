@@ -2,6 +2,30 @@
 
 本轮首次直接分析本机 EXE 和本机 ClientStructs DLL，未启动游戏。所有地址均为 RVA，相对于 PE ImageBase `0x140000000`；不直接用于其他构建。
 
+## 另一台电脑的离线复核
+
+2026-10-27 在另一台电脑核对的 EXE SHA-256 与下方一致。基于 unwind 区间和指令边界扫描 `+0x12C`，获得 714 个候选；相同偏移在不同类型中可表示不同字段，不能将所有候选归为视图分组。结果及完整指令仅保存在忽略目录 `artifacts/native-analysis/office-20261027/field-12c/`。
+
+对已知两条路径继续核查：`3B9E8D` 与 `3BA621` 均调用 `3831A0`；返回后分别执行对象虚表 `+0x120`（`3B9EAE`）和 `+0x128`（`3BA638`）。`3831A0` 包含线程局部上下文访问，`383269` 将一个栈参数字节写入该上下文的 `+0x130`。这是可复现的调用顺序，不足以确定两个虚函数的具体类型、最终渲染目标、透明混合或深度状态。
+
+例如 `3F2D69` 也读取偏移 `+0x12C`，但其基址来自 `[rdi+0x430]`，随后写入步长为 48 字节的记录；目前没有证据证明其为 `3839C8` 使用的线程局部对象，不要仅凭偏移一致连接这两处。进一步扫描 `+0x430` 得到 1055 个候选：`3F8B6F` 把从一个按 `0x500` 字节步长索引的池取得的指针写入对象 `+0x430`；`38FB74` 在检查资源管理器的代次及对象字段后也写入某个管理器条目的对象 `+0x430`。字段来源已缩小到候选构造和赋值路径，但对象的动态类型、两个赋值路径之间的关系仍未证明。
+
+`3CFE08` 申请 `0x470` 字节后在 `3CFE47` 调用 `3F8A80`，后者于 `3F8AC6` 设置候选虚表 `2160360`。该表 `+0x120` 指向 `3E2FB0`，`+0x128` 指向 `3E47E0`；后者的首条指令是三字节 `ret 0`。这为前述两个虚调用提供了一组**条件候选**，但尚未证明实际管理器对象使用这张表，不能把它们命名为粒子通道。按现有直接引用扫描，`40C5A0` 没有直接 CALL/JMP 命中，不能据此排除虚表或其他间接调用。
+
+分析脚本新增 `--output-dir` 与 `--structs-dir`，可在不同目录保存独立运行结果并复用本机导出的结构定义；新增 `--vtable RVA:COUNT` 读取 `.rdata` 中指定候选表。对缺少 unwind 信息的入口，仅解码到首个返回、无条件跳转或中断等终止指令，并标记为 `fallback-terminated`，不会把后续对齐区或其他函数的调用算到同一函数。此边界仍是保守近似，不是完整控制流图。复现本次候选扫描（需本地安装 capstone 和 pefile）：
+
+```powershell
+python scripts/Inspect-NativePreview.py '本机游戏目录\game\ffxiv_dx11.exe' `
+  --field-offset 12c --output-dir artifacts/native-analysis/office-20261027/field-12c
+python scripts/Inspect-NativePreview.py '本机游戏目录\game\ffxiv_dx11.exe' `
+  --field-offset 430 --output-dir artifacts/native-analysis/office-20261027/field-430
+python scripts/Inspect-NativePreview.py '本机游戏目录\game\ffxiv_dx11.exe' `
+  --vtable 2160360:38 --function 3e2fb0 --function 3e47e0 `
+  --output-dir artifacts/native-analysis/office-20261027/vtable-validated
+```
+
+真实粒子绘制路径和游戏内画面仍未证实，保护门槛保持不变。
+
 客户端版本：`2026.10.06.0000.0000`。EXE SHA-256：`958b78e278ad896493c484eb313ff605ab41edefef74f92b0ee078e69b281bf9`。这比版本字符串更精确；未来启用必须按进程实际模块和文件指纹核验，不能全局硬编码“已兼容”。
 
 ## 已证实的控制流

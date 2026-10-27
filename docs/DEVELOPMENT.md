@@ -2,6 +2,20 @@
 
 日期：2026-10-27（Asia/Shanghai）。本记录对应 0.3.4 开发接续版，不是 0.4 播放器完成记录。
 
+## 2026-10-27 本机继续调查
+
+本机 `dev/independent-preview` 起点为 `701094d`，切换前无未提交改动。游戏版本 `2026.10.06.0000.0000`，EXE SHA-256 为 `958B78E278AD896493C484EB313FF605AB41EDEFEF74F92B0EE078E69B281BF9`，与交接记录一致。本机 SDK 10.0.400；启动器 `Hooks/dev` 中 Dalamud 15.0.3.9、FFXIVClientStructs 7.57.0.9602 和 Penumbra.Api 1.7.2.4 与交接记录的版本一致，DLL 内容哈希记录在本机忽略目录，不以同版本号推断字节完全相同。
+
+这台电脑原有 `DALAMUD_HOME` 指向另一套较旧 SDK（Dalamud 15.0.3.2、ClientStructs 7.55.1.9040）。构建和核验时显式传入启动器 SDK 目录，不修改系统环境变量。脚本现可使用 `-DalamudHome` 选择一致的插件、GameData 与 CLI 引用，并分别使用 `-OutputDirectory`、`-PluginOutputDirectory`、`-SampleOutputDirectory` 保存结果，保留既有产物。
+
+本次只进行离线构建、测试和 PE 读取，未启动游戏或原生探针。视图申请与释放、销毁线程及最终粒子渲染仍待证据；五项兼容门槛未改变。开发中的托管会话已修正失败资源依赖清理和显式重试，详见 [兼容性调查](NATIVE-COMPATIBILITY.md)。
+
+离线分析脚本的回归测试在安装 `capstone` 和 `pefile` 后运行：
+
+```powershell
+python -m unittest discover -s tests -p test_native_analysis.py -v
+```
+
 ## 基线与环境
 
 - 仓库：`https://github.com/Star-Fish-C/AetherVfx`；基线 `11b9023e38e353ccd750340c98d78d297d7dc394`（0.3.3）。

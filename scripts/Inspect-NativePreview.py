@@ -20,12 +20,28 @@ import capstone
 import pefile
 
 
+def conservative_fallback_end(md, code, start_rva, image_base):
+    """Bound a no-unwind stub at its first terminator; this is not a full CFG."""
+    end = start_rva
+    for ins in md.disasm(code, image_base + start_rva):
+        end = ins.address - image_base + ins.size
+        if ins.mnemonic in ('ret', 'retf', 'iret', 'iretd', 'iretq', 'jmp', 'int3', 'ud2'):
+            break
+    return end
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('executable', type=Path)
     parser.add_argument('--function', action='append', default=[], help='Extra RVA or start:end range, in hex')
     parser.add_argument('--references', action='append', default=[], help='Find direct call/jump references to a hex RVA; indirect calls are not covered')
     parser.add_argument('--field-offset', action='append', default=[], help='Find memory operands with this hex displacement (candidates, not a type identification)')
+    parser.add_argument('--vtable', action='append', default=[], metavar='RVA:COUNT',
+                        help='Read a candidate vtable from .rdata; RVA is hex, count is decimal (max 128)')
+    parser.add_argument('--output-dir', type=Path, default=ROOT / 'artifacts/native-analysis',
+                        help='Directory for this run; use a distinct path to preserve earlier evidence')
+    parser.add_argument('--structs-dir', type=Path, default=ROOT / 'artifacts/native-analysis/structs',
+                        help='Directory containing optional local ClientStructs ILSpy exports')
     args = parser.parse_args()
     binary = args.executable.read_bytes()
     pe = pefile.PE(data=binary)
@@ -38,11 +54,12 @@ def main():
     starts = [a for a, _ in entries]
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     md.detail = True
-    output = ROOT / 'artifacts/native-analysis'
+    output = args.output_dir
     output.mkdir(parents=True, exist_ok=True)
     report = {'ExecutableSHA256': hashlib.sha256(binary).hexdigest(), 'ImageBase': hex(base),
               'Signatures': {}, 'Vtables': {}, 'Functions': {}}
     functions = {}
+    fallback_starts = set()
     # Decode from the enclosing unwind range to reject opcode bytes embedded in instructions.
     # This still is not a complete CFG: indirect callers and code without unwind metadata are omitted.
     boundaries = {}
@@ -99,12 +116,14 @@ def main():
         if index >= 0 and entries[index][0] <= rva < entries[index][1]:
             start, end = entries[index]
         else:
-            start, end = rva, rva + 256
+            start = rva
+            end = conservative_fallback_end(md, image[rva:rva + 256], rva, base)
+            fallback_starts.add(start)
         functions.setdefault(start, (end, name))
         return start
 
     signatures = {}
-    for source in (output / 'structs').glob('*.cs'):
+    for source in args.structs_dir.glob('*.cs'):
         for name, sig, relative in re.findall(r'new Address\("([^\"]+)", "([^\"]+)", new ushort\[\d+\] \{ (\d+) \}', source.read_text(encoding='utf-8-sig')):
             signatures[name] = (sig, int(relative))
     signatures['ActorVfxCreate'] = ('40 53 55 56 57 48 81 EC ?? ?? ?? ?? 0F 29 B4 24 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? 0F B6 AC 24 ?? ?? ?? ?? 0F 28 F3 49 8B F8', None)
@@ -162,8 +181,24 @@ def main():
             if not text_rva <= start < end <= text_rva + len(text_data):
                 raise ValueError('Requested range outside .text')
             functions[start] = (end, 'requested explicit range')
+            fallback_starts.discard(start)
         else:
             add_function(int(rva, 16), 'requested')
+    for spec in args.vtable:
+        parts = spec.split(':')
+        if len(parts) != 2:
+            raise ValueError('Vtable must be RVA:COUNT')
+        table, count = int(parts[0], 16), int(parts[1], 10)
+        section = pe.get_section_by_rva(table)
+        if section is None or section.Name.rstrip(b'\0') != b'.rdata' or not 1 <= count <= 128:
+            raise ValueError('Candidate vtable must start in .rdata and contain 1-128 entries')
+        end = table + count * 8
+        section_end = section.VirtualAddress + max(section.Misc_VirtualSize, section.SizeOfRawData)
+        if end > len(image) or end > section_end:
+            raise ValueError('Candidate vtable extends beyond .rdata')
+        # Values are reported as RVAs only; this is not proof of a complete vtable or runtime type.
+        pointers = [struct.unpack_from('<Q', image, table + 8 * i)[0] - base for i in range(count)]
+        report['Vtables'][hex(table)] = [hex(x) for x in pointers]
     lines = []
     for start, (end, name) in sorted(functions.items()):
         lines.append(f'\n## {name} RVA {start:#x}..{end:#x}\n')
@@ -172,7 +207,8 @@ def main():
             lines.append(f'{ins.address - base:08x}  {ins.mnemonic:8} {ins.op_str}')
             if ins.mnemonic == 'call' and ins.operands[0].type == capstone.CS_OP_IMM:
                 calls.append(hex(ins.operands[0].imm - base))
-        report['Functions'][hex(start)] = {'Name': name, 'End': hex(end), 'DirectCalls': calls}
+        range_kind = 'explicit' if name == 'requested explicit range' else 'fallback-terminated' if start in fallback_starts else 'unwind'
+        report['Functions'][hex(start)] = {'Name': name, 'End': hex(end), 'RangeKind': range_kind, 'DirectCalls': calls}
     (output / 'functions.txt').write_text('\n'.join(lines), encoding='utf-8')
     (output / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(json.dumps({'ExecutableSHA256': report['ExecutableSHA256'], 'Signatures': report['Signatures'], 'Vtables': report['Vtables']}, indent=2))
