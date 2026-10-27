@@ -122,6 +122,8 @@ CharaView 在 `9CD718` 初始化自身 CameraManager，传入视图索引；同�
 
 进一步发现 `26A1D0` 在 `26A2C8` 也读取 `28FCF08` 所指对象的 `+0x2C8` 索引表；索引来自线程局部对象 `+8` 的高 4 位，或在另一条件下取零。这里尚未证明该值与 ActorVFX 分组的关联，也未证明读取的条目包含粒子输出。复现用 `--function 26a850:26a900 --references 26a870 --references 26a850` 及 `--rip-target 28fcf08`；证据保存在 `artifacts/native-analysis/office-20261027-offscreen-routing` 和 `office-20261027-output-table`。对全局地址的扫描得到 280 个候选引用，只覆盖带 unwind 区间且能从区间起点解码的指令。
 
+对 `26A1D0` 的直接引用扫描找到 `2BA2B0` 和 `2BAC2F`。前者位于一个最多遍历 8 项的循环内，`2BA20E..2BA21B` 在条件成立时把循环索引写入一批记录 `+8` 的高 4 位，随后在 `2BA2B0` 调用 `26A1D0`，后者从线程局部对象 `+8` 高 4 位选择输出表项。这给输出编号的产生路径提供了具体候选，但目前尚未证明循环写入的记录与被读取的线程局部对象为同一实例，也不能由此认定 ActorVFX 粒子会进入输出。复现参数 `--references 26a1d0 --function 26a1d0 --function 383780`，本机证据保存在 `artifacts/native-analysis/office-20261027-view-routing`。
+
 复现本节：先导出本机 `Scene.CharacterBase` 和 `Scene.CameraManager`，再运行分析脚本加 `--function 3900e0:390163 --function 9cea20:9cead9`。脚本现已正确解析 `StaticVirtualTable` 的 RIP 相对地址，并输出模型第 30/31 项。以上连接支持继续调查该路线，但尚未证明最终粒子绘制、深度或透明混合正确。
 
 分析库安装在被 Git 忽略的 `artifacts/tools`：capstone 5.0.9、pefile 2024.8.26、dnfile 0.18.0；本轮仅脚本使用前两者。ILSpy 命令行 11.1.0.9782 仅用于读取本机 DLL。工具不修改游戏文件，也不执行游戏代码。
